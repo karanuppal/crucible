@@ -8,6 +8,20 @@ from agentic_harness.validation.reviewer import (
 )
 
 
+def _valid_criterion_dict(cid="c1"):
+    return {
+        "criterion_id": cid,
+        "description": "test",
+        "criterion_class": "must_pass",
+        "triple": {
+            "build_target": "src/foo.py",
+            "verification_command": "pytest tests/foo.py",
+            "expected_output": "PASSED",
+            "failure_signature": "FAILED",
+        },
+    }
+
+
 class TestReviewerIndependence:
     def test_forbidden_builder_rationale_rejected(self):
         raw = {
@@ -16,7 +30,7 @@ class TestReviewerIndependence:
             "artifact_refs": [],
             "builder_rationale": "I did this because...",  # forbidden
         }
-        with pytest.raises(ValueError, match="forbidden"):
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
     
     def test_forbidden_chain_of_thought_rejected(self):
@@ -25,15 +39,22 @@ class TestReviewerIndependence:
             "criteria": [],
             "builder_chain_of_thought": "step 1... step 2...",
         }
-        with pytest.raises(ValueError, match="forbidden"):
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
     
     def test_valid_input_accepted(self):
         raw = {
             "spec": "spec",
-            "criteria": [{"id": "c1"}],
+            "criteria": [_valid_criterion_dict()],
             "artifact_refs": [],
-            "validation_verdict": {"status": "complete"},
+            "validation_verdict": {
+                "task_id": "t1",
+                "status": "complete",
+                "must_pass_failures": [],
+                "blocked_required": [],
+                "reason": "",
+                "criterion_results": [],
+            },
             "diffs": "diff content",
         }
         inp = ReviewerInput.from_raw(raw)

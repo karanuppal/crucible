@@ -36,13 +36,26 @@ def _mk_criterion(cid="c1", cmd="pytest tests/test_foo.py"):
 # Blocker 1: Recursive forbidden-key filtering
 # ─────────────────────────────────────────────────────────────────
 
+def _valid_criterion_dict(cid="c1"):
+    return {
+        "criterion_id": cid,
+        "description": "test",
+        "criterion_class": "must_pass",
+        "triple": {
+            "build_target": "src/foo.py",
+            "verification_command": "pytest tests/foo.py",
+            "expected_output": "PASSED",
+            "failure_signature": "FAILED",
+        },
+    }
+
+
 class TestNestedForbiddenKeys:
     def test_nested_builder_rationale_rejected(self):
-        raw = {
-            "spec": "x",
-            "criteria": [{"id": "c1", "builder_rationale": "leaked"}],
-        }
-        with pytest.raises(ValueError, match="forbidden"):
+        c = _valid_criterion_dict()
+        c["builder_rationale"] = "leaked"
+        raw = {"spec": "x", "criteria": [c]}
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
     
     def test_deeply_nested_forbidden_rejected(self):
@@ -50,32 +63,38 @@ class TestNestedForbiddenKeys:
             "spec": "x",
             "criteria": [],
             "validation_verdict": {
-                "details": {
-                    "inner": {
-                        "builder_chain_of_thought": "secret",
-                    }
-                }
+                "task_id": "t1",
+                "status": "complete",
+                "must_pass_failures": [],
+                "blocked_required": [],
+                "reason": "",
+                "criterion_results": [],
+                "builder_chain_of_thought": "secret",  # forbidden key at this level
             },
         }
-        with pytest.raises(ValueError, match="forbidden"):
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
     
     def test_forbidden_in_list_rejected(self):
-        raw = {
-            "spec": "x",
-            "criteria": [
-                {"id": "c1"},
-                {"id": "c2", "builder_thoughts": "leak"},
-            ],
-        }
-        with pytest.raises(ValueError, match="forbidden"):
+        c1 = _valid_criterion_dict("c1")
+        c2 = _valid_criterion_dict("c2")
+        c2["builder_thoughts"] = "leak"
+        raw = {"spec": "x", "criteria": [c1, c2]}
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
     
     def test_clean_nested_accepted(self):
         raw = {
             "spec": "x",
-            "criteria": [{"id": "c1", "description": "do the thing"}],
-            "validation_verdict": {"status": "complete", "details": {"coverage": "100%"}},
+            "criteria": [_valid_criterion_dict()],
+            "validation_verdict": {
+                "task_id": "t1",
+                "status": "complete",
+                "must_pass_failures": [],
+                "blocked_required": [],
+                "reason": "ok",
+                "criterion_results": [],
+            },
         }
         # Should not raise
         ReviewerInput.from_raw(raw)

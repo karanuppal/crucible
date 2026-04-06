@@ -17,6 +17,7 @@ from typing import Any
 from agentic_harness.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict,
 )
+from agentic_harness.validation.run_registry import RunRegistry
 
 
 class TaskCompletionStatus(str, Enum):
@@ -44,9 +45,12 @@ class Validator:
     """Computes validation verdicts using gate semantics.
     
     Never uses pass-rate heuristics. Every must-pass criterion must:
-    - PASS with reachable evidence artifacts, OR
-    - Be explicitly waived (not supported in Phase 3)
+    - PASS with reachable evidence artifacts, AND
+    - Have provenance confirmed by the RunRegistry (not self-attested)
     """
+    
+    def __init__(self, run_registry: RunRegistry | None = None) -> None:
+        self._registry = run_registry
     
     def validate(
         self,
@@ -70,6 +74,17 @@ class Validator:
                 criterion_results=results,
                 reason="No criteria defined (fail closed)",
             )
+        
+        # Rule: all criteria must have well-formed verification triples
+        # Enforcement at the validator boundary (not just a helper method)
+        for c in criteria:
+            if not c.triple.is_well_formed():
+                return ValidationVerdict(
+                    task_id=task_id,
+                    status=TaskCompletionStatus.FAILED,
+                    criterion_results=results,
+                    reason=f"Criterion {c.criterion_id} has incomplete verification triple (fail closed)",
+                )
         
         # Rule: must have at least one must-pass
         must_pass_criteria = [c for c in criteria if c.criterion_class == CriterionClass.MUST_PASS]
@@ -96,14 +111,34 @@ class Validator:
         for r in results:
             if r.verdict == CriterionVerdict.PASS:
                 crit = criteria_by_id[r.criterion_id]
-                # Evidence must come from this criterion's verification command
-                if not r.has_real_evidence(expected_command=crit.triple.verification_command):
+                # Local consistency check first
+                local_ok = r.has_real_evidence(expected_command=crit.triple.verification_command)
+                
+                # Authoritative provenance via RunRegistry (if provided)
+                registry_ok = True
+                if self._registry is not None:
+                    if not r.run_id:
+                        registry_ok = False
+                    else:
+                        for art in r.evidence_artifacts:
+                            if not self._registry.verify_provenance(
+                                r.run_id, crit.triple.verification_command, art
+                            ):
+                                registry_ok = False
+                                break
+                
+                if not (local_ok and registry_ok):
+                    reason = "PASS downgraded: "
+                    if not local_ok:
+                        reason += "local evidence check failed"
+                    elif not registry_ok:
+                        reason += "registry provenance check failed"
                     normalized_results.append(CriterionResult(
                         criterion_id=r.criterion_id,
                         verdict=CriterionVerdict.FAIL,
                         evidence_artifacts=r.evidence_artifacts,
                         actual_output=r.actual_output,
-                        error="PASS downgraded: evidence provenance failed (missing/wrong-run/wrong-command artifacts)",
+                        error=reason,
                         executed_command=r.executed_command,
                         run_id=r.run_id,
                     ))

@@ -27,14 +27,35 @@ class ReviewerVerdict(str, Enum):
     BLOCKED = "blocked"  # cannot assess
 
 
-# Whitelist of fields a reviewer is allowed to see
+# Strict allowlist — only these top-level fields are permitted in reviewer input
 ALLOWED_REVIEWER_INPUT_KEYS = {
     "spec",
     "criteria",
-    "triples",
     "artifact_refs",
     "validation_verdict",
     "diffs",
+}
+
+# Strict allowlists for nested structures
+ALLOWED_CRITERION_KEYS = {
+    "criterion_id",
+    "description",
+    "criterion_class",
+    "triple",
+}
+ALLOWED_TRIPLE_KEYS = {
+    "build_target",
+    "verification_command",
+    "expected_output",
+    "failure_signature",
+}
+ALLOWED_VERDICT_KEYS = {
+    "task_id",
+    "status",
+    "must_pass_failures",
+    "blocked_required",
+    "reason",
+    "criterion_results",
 }
 
 # Explicitly forbidden fields (builder-private)
@@ -105,20 +126,40 @@ class ReviewerReport:
 
 
 def validate_reviewer_input(raw: dict[str, Any]) -> None:
-    """Raise ValueError if reviewer input contains forbidden fields ANYWHERE in the tree."""
-    _recursive_forbidden_scan(raw, path="root")
+    """Strict allowlist validation of reviewer input.
+    
+    Only explicitly allowed keys are permitted. Unknown keys at ANY depth
+    are rejected. This replaces denylist scanning with a strict contract.
+    """
+    _strict_allowlist_check(raw, ALLOWED_REVIEWER_INPUT_KEYS, path="root")
+    # Deep structural checks
+    if "criteria" in raw:
+        for i, c in enumerate(raw["criteria"]):
+            if isinstance(c, dict):
+                _strict_allowlist_check(c, ALLOWED_CRITERION_KEYS, path=f"criteria[{i}]")
+                if "triple" in c and isinstance(c["triple"], dict):
+                    _strict_allowlist_check(
+                        c["triple"], ALLOWED_TRIPLE_KEYS, path=f"criteria[{i}].triple"
+                    )
+    if "validation_verdict" in raw and isinstance(raw["validation_verdict"], dict):
+        _strict_allowlist_check(
+            raw["validation_verdict"], ALLOWED_VERDICT_KEYS, path="validation_verdict"
+        )
 
 
-def _recursive_forbidden_scan(obj: Any, path: str) -> None:
-    """Walk arbitrary nested dict/list structure, rejecting forbidden keys at any depth."""
-    if isinstance(obj, dict):
-        forbidden = set(obj.keys()) & FORBIDDEN_REVIEWER_INPUT_KEYS
-        if forbidden:
-            raise ValueError(
-                f"Reviewer input contains forbidden builder-private fields at {path}: {sorted(forbidden)}"
-            )
-        for k, v in obj.items():
-            _recursive_forbidden_scan(v, f"{path}.{k}")
-    elif isinstance(obj, list):
-        for i, item in enumerate(obj):
-            _recursive_forbidden_scan(item, f"{path}[{i}]")
+def _strict_allowlist_check(obj: dict[str, Any], allowed: set[str], path: str) -> None:
+    """Reject any keys not in allowlist. Also reject known-forbidden keys explicitly."""
+    if not isinstance(obj, dict):
+        return
+    extra = set(obj.keys()) - allowed
+    if extra:
+        raise ValueError(
+            f"Reviewer input at {path} has disallowed keys: {sorted(extra)} "
+            f"(allowed: {sorted(allowed)})"
+        )
+    # Belt-and-suspenders: reject forbidden names everywhere
+    forbidden = set(obj.keys()) & FORBIDDEN_REVIEWER_INPUT_KEYS
+    if forbidden:
+        raise ValueError(
+            f"Reviewer input contains forbidden builder-private fields at {path}: {sorted(forbidden)}"
+        )
