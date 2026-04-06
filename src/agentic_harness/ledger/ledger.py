@@ -48,28 +48,50 @@ class LedgerEvent:
 class Ledger:
     """Append-only project ledger backed by a JSONL file."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, strict_integrity: bool = False) -> None:
         self._path = path
         self._events: list[LedgerEvent] = []
+        self._next_seq: int = 0
+        self._strict_integrity = strict_integrity
         if os.path.exists(path):
             self._load()
 
     def _load(self) -> None:
-        """Load events from JSONL file, skipping corrupted tail records."""
+        """Load events from JSONL file.
+        
+        Corruption handling:
+        - strict_integrity=True: corrupted non-tail records raise ValueError (fail-closed)
+        - strict_integrity=False: corrupted records are skipped (lenient recovery)
+        - Sequence numbers are validated for monotonic ordering when present
+        """
         self._events = []
+        lines: list[str] = []
         with open(self._path, "r") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    data["eventType"] = EventType(data["eventType"])
-                    self._events.append(LedgerEvent(**data))
-                except (json.JSONDecodeError, TypeError, ValueError, KeyError):
-                    # Corrupted record — skip it but don't lose prior valid events
-                    # This handles the "corrupted tail record" recovery requirement
-                    continue
+            lines = [l.strip() for l in f if l.strip()]
+        
+        last_seq = -1
+        for line_idx, line in enumerate(lines):
+            is_tail = (line_idx == len(lines) - 1)
+            try:
+                data = json.loads(line)
+                data["eventType"] = EventType(data["eventType"])
+                # Validate and strip sequence number if present
+                # Sequence validation is always active — detects rewrite/forgery
+                seq = data.pop("seq", None)
+                if seq is not None:
+                    if seq <= last_seq:
+                        raise ValueError(f"Non-monotonic sequence: {seq} <= {last_seq}")
+                    last_seq = seq
+                self._events.append(LedgerEvent(**data))
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                if self._strict_integrity and not is_tail:
+                    raise ValueError(
+                        f"Corrupted non-tail record at line {line_idx + 1}: {e}"
+                    ) from e
+                # Lenient mode or tail corruption: skip
+                continue
+        
+        self._next_seq = last_seq + 1 if last_seq >= 0 else 0
 
     def append(self, event: LedgerEvent) -> None:
         """Append an event to the ledger. Writes immediately to disk."""
@@ -77,9 +99,11 @@ class Ledger:
         self._persist_event(event)
 
     def _persist_event(self, event: LedgerEvent) -> None:
-        """Write a single event as a JSONL line."""
+        """Write a single event as a JSONL line with sequence number."""
         data = asdict(event)
         data["eventType"] = event.eventType.value
+        data["seq"] = self._next_seq
+        self._next_seq += 1
         line = json.dumps(data, separators=(",", ":"))
         with open(self._path, "a") as f:
             f.write(line + "\n")

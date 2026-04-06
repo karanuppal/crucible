@@ -70,6 +70,12 @@ def classify_ambiguity(findings: list[AmbiguityFinding]) -> AmbiguityResult:
             rationale="No ambiguity detected.",
         )
 
+    _VALID_SEVERITIES = {"low", "medium", "high"}
+    # Unknown severity is treated as high (fail-closed)
+    for f in findings:
+        if f.severity not in _VALID_SEVERITIES:
+            f.severity = "high"
+
     high = [f for f in findings if f.severity == "high"]
     medium = [f for f in findings if f.severity == "medium"]
     low = [f for f in findings if f.severity == "low"]

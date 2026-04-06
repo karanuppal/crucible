@@ -305,7 +305,7 @@ def deserialize(type_name: str, json_str: str, *, strict: bool = True) -> Any:
         if unknown:
             raise ValueError(f"Unknown fields: {sorted(unknown)}")
     
-    # Check enum values
+    # Validate field types
     for field_name, val in data.items():
         if field_name not in cls.__dataclass_fields__:
             continue
@@ -314,11 +314,58 @@ def deserialize(type_name: str, json_str: str, *, strict: bool = True) -> Any:
             ft_resolved = _resolve_type(ft_str, cls)
         else:
             ft_resolved = ft_str
+        
+        # Enum validation
         if ft_resolved and isinstance(ft_resolved, type) and issubclass(ft_resolved, Enum):
             try:
                 ft_resolved(val)
             except ValueError:
                 valid = [e.value for e in ft_resolved]
                 raise ValueError(f"Invalid value for {field_name}: {val!r}. Valid: {valid}")
+        
+        # List type validation
+        if isinstance(ft_str, str) and ft_str.startswith("list[") and not isinstance(val, list):
+            raise ValueError(f"Field {field_name} must be a list, got {type(val).__name__}")
+        
+        # Bool validation for fields that should be bool
+        if isinstance(ft_str, str) and ft_str == "bool" and not isinstance(val, bool):
+            raise ValueError(f"Field {field_name} must be a bool, got {type(val).__name__}")
+    
+    # Validate nested dataclass lists
+    _validate_nested_lists(cls, data)
     
     return _reconstruct(cls, data)
+
+
+def _validate_nested_lists(cls: type, data: dict[str, Any]) -> None:
+    """Validate that list fields containing dataclasses have valid element schemas."""
+    _NESTED_LIST_SCHEMAS: dict[str, dict[str, type]] = {
+        "ValidationState": {
+            "criterionResults": CriterionResult,
+            "gateResults": GateResult,
+        },
+    }
+    
+    schema_map = _NESTED_LIST_SCHEMAS.get(cls.__name__, {})
+    for field_name, element_cls in schema_map.items():
+        if field_name not in data:
+            continue
+        items = data[field_name]
+        if not isinstance(items, list):
+            continue
+        required = _required_fields(element_cls)
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"{field_name}[{i}] must be a dict, got {type(item).__name__}")
+            missing = required - set(item.keys())
+            if missing:
+                raise ValueError(f"{field_name}[{i}] missing required fields: {sorted(missing)}")
+            # Validate bool fields in nested objects
+            for nested_field, nested_f in element_cls.__dataclass_fields__.items():
+                if nested_field in item:
+                    ft = nested_f.type
+                    if ft == "bool" or ft is bool:
+                        if not isinstance(item[nested_field], bool):
+                            raise ValueError(
+                                f"{field_name}[{i}].{nested_field} must be bool, got {type(item[nested_field]).__name__}"
+                            )

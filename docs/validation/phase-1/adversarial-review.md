@@ -1,0 +1,99 @@
+- Verdict: FAIL
+
+- Findings (blocking)
+  - State can be mutated without any defined transition layer.
+    - All six state contracts are plain mutable dataclasses with no frozen fields, no transition API, and no invariant enforcement after construction.
+    - Example: `TaskState.status`, `RunState.status`, `BuildState.phase`, and list fields can be reassigned directly by any caller after deserialization.
+    - This fails the adversarial question "Can I mutate state without a defined transition?" The answer is yes.
+  - Malformed nested state can silently proceed through deserialization.
+    - `deserialize()` validates top-level required fields and top-level enum values, but does not validate nested list element schemas or primitive types inside containers.
+    - Concrete evidence from live probe:
+      - `ValidationState` accepted `criterionResults=[{"criterionId":"c1","passed":"yes","evidence":"x"}]` and returned raw `dict` elements instead of `CriterionResult` objects.
+      - `ValidationState` also accepted `gateResults=[{"gateName":"g","passed":"no","mustPass":"sure"}]` with invalid boolean types.
+      - `RunState` accepted `blockingChildren="notalist"` even though the field is declared `list[str]`.
+    - This directly violates the Phase 1 blocking gate: "zero invalid fixtures accepted silently."
+  - Ledger history can be forged or overwritten offline.
+    - The ledger is append-only only by convention of the in-memory API. The persisted file has no integrity protection, no monotonic sequence number, no hash chain, no signature, no file locking, and no detection of truncation/rewrite.
+    - Concrete evidence from live probe:
+      - Created two valid events.
+      - Replaced the JSONL file contents with a single forged event using `open(path, "w")`.
+      - Reloaded `Ledger(path)` and it accepted the forged history as authoritative.
+    - This fails the adversarial question "Can I forge or overwrite ledger history?" The answer is yes.
+  - Corruption handling is not fail-closed and does not meet the stated recovery guarantee.
+    - `_load()` skips any malformed line anywhere in the file, not just a corrupted tail record.
+    - That means a corrupted middle record is silently dropped and later records continue loading, which can hide tampering or broken write sequences instead of forcing explicit recovery.
+    - The validation matrix requires interrupted-write recovery or safe fail-closed behavior. Current behavior is silent salvage, not fail-closed.
+  - Ambiguity can be misclassified as safe to build.
+    - `classify_ambiguity()` only recognizes severities exactly equal to `"high"`, `"medium"`, or `"low"`.
+    - Any unrecognized severity, including stronger labels like `"critical"`, falls through to the low-severity branch and returns `CLEAR`.
+    - Concrete evidence from live probe:
+      - A finding with category `MISSING_CRITERIA` and severity `"critical"` produced `CLEAR` and `is_safe_to_proceed() == True`.
+    - That is an unsafe false clear on a missing-criteria case, which is explicitly a fail-signoff condition.
+  - The tests do not prove the ledger append-only invariant against actual mutation/overwrite risk.
+    - The ledger tests only check absence of public delete/update methods and that `events()` returns a copy.
+    - They do not test file truncation, file replacement, event replay with forged IDs/timestamps, or tamper detection on reload.
+    - The implementation therefore passes tests while remaining forgeable.
+
+- Findings (non-blocking)
+  - `_reconstruct()` contains fragile required-field logic.
+    - The checks comparing `field_obj.default` to `field_obj.default_factory` and `field_obj.default_factory` to `dataclass` are not a correct way to reason about dataclass defaults.
+    - Top-level missing required fields are currently caught earlier by `deserialize()`, so this is mostly redundant rather than immediately exploitable.
+  - State type enforcement is generally shallow, not schema-complete.
+    - Primitive types such as `str`, `bool`, and `list[str]` are not validated beyond enum fields.
+    - Nested dataclasses inside lists are not reconstructed or validated.
+  - Failure taxonomy unknown-case behavior is safe on action selection, but semantically muddy.
+    - Unknown string inputs return `next_action=SAFE_FALLBACK`, which is good, but set `failure_class=LOOP_DETECTED`, which can pollute downstream analytics/state.
+    - This is not a Phase 1 blocker by itself because the next action is still safe.
+  - Test execution environment was incomplete here.
+    - `pytest` was not installed in the current Python environment, so I could not independently execute the official test suite end-to-end in this session.
+    - I validated behavior via direct Python probes against the source modules instead.
+
+- Missing validation matrix items
+  - State contracts
+    - No evidence here of minimal, normal, and maximal examples for all 6 state types. The test file covers minimal examples for all six, but maximal coverage is only evident for `TaskState` and `ValidationState`.
+    - No restart/recovery test proving persist/reload exact equivalence for all 6 state types outside simple serialize/deserialize in-memory roundtrip.
+    - No negative tests for malformed nested objects that actually assert rejection. This is the biggest gap, and live probes show invalid nested state is accepted.
+    - No tests for wrong primitive/container types (`bool`, `list[str]`, nested object fields).
+  - Ledger
+    - No test for malformed event payload rejection.
+    - No test for interrupted write semantics beyond malformed-line skipping.
+    - No fail-closed test for non-tail corruption.
+    - No test or evidence proving append-only against file truncation/rewrite/tampering.
+  - Ambiguity gate
+    - No curated corpus artifact or mismatch report was reviewed here; only unit tests exist.
+    - No tests for the `DEFER` outcome even though it is part of the output contract.
+    - No tests for unrecognized severity values or malformed findings.
+    - No evidence of a required corpus threshold with zero critical unsafe clears.
+  - Failure taxonomy
+    - No restart/recovery test showing classification persists correctly in stored task/build state.
+    - No decision-table artifact reviewed here, only mapping tests.
+  - Required signoff packet artifacts
+    - `docs/validation/phase-1/` exists but `find` returned no files during this review, so the required signoff packet appears missing or empty from this environment.
+    - Missing expected artifacts include:
+      - `validation-matrix.md`
+      - `state-fixtures/`
+      - `ledger-tests.log`
+      - `ambiguity-corpus-report.md`
+      - `failure-taxonomy-report.md`
+      - reviewer reports
+      - final signoff file
+
+- Recommendations
+  - Add a real transition layer for state.
+    - Make state dataclasses immutable (`frozen=True`) or treat them as internal records created only via transition functions.
+    - Define allowed transitions explicitly (for example `TaskState.pending -> in_progress -> complete|failed|blocked`) and reject illegal jumps.
+  - Replace ad hoc deserialization with strict schema validation.
+    - Validate nested dataclasses recursively, including lists of dataclasses.
+    - Validate primitive/container types, not just enum membership.
+    - Reject malformed nested objects and wrong list/scalar types.
+    - Add explicit tests for all of the malformed cases above.
+  - Harden the ledger if it is intended to be trust-bearing evidence.
+    - At minimum: detect truncation/rewrite, reject non-tail corruption unless explicit recovery mode is used, and validate event schema on load.
+    - Stronger option: add monotonically increasing sequence numbers plus previous-hash chaining so tampering becomes detectable.
+    - Add tests for file replacement, truncation, middle corruption, duplicate IDs, and forged timestamps.
+  - Make ambiguity classification fail closed on unknown severity.
+    - Either validate severity as an enum or treat unknown severity as blocking (`CLARIFY`/`DEFER`), never `CLEAR`.
+    - Add explicit tests for malformed findings and for `DEFER`.
+  - Finish the validation packet before claiming Phase 1 signoff.
+    - Produce the required fixture corpus, raw logs, mismatch report, and reviewer reports.
+    - Without those artifacts, evidence is incomplete even if code is improved.
