@@ -57,7 +57,11 @@ class TestSpawnController:
         # Manually add a running job
         run_id = graph.spawn("t1", RunRole.BUILDER)
         graph.update_status(run_id, RunStatus.RUNNING)
-        controller._active_runs[run_id] = time.time() - 1000  # Started long ago
+        controller._active_runs[run_id] = {
+            "start_time": time.time() - 1000,  # Started long ago
+            "timeout_seconds": 600,
+            "backend_handle": None,
+        }
         
         timed_out = controller.check_timeouts()
         

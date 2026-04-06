@@ -108,23 +108,68 @@ class CircuitBreaker:
     def can_retry(self, task_id: str, new_approach: str) -> bool:
         """Check if a new approach is allowed.
         
-        A new approach is allowed if:
-        - It hasn't been tried before
-        - Or significant time has passed
+        Uses normalized comparison to prevent trivial-rewording bypass:
+        whitespace, casing, and punctuation differences do not count as new approaches.
         """
         recent = self.get_rejections(task_id)
         if not recent:
             return True
         
-        # Check if this exact approach was tried
-        tried = {r.approach for r in recent}
-        if new_approach in tried:
-            # Check if it's been long enough (reset after window)
+        normalized_new = _normalize_text(new_approach)
+        # Compare normalized approaches
+        tried_normalized = {_normalize_text(r.approach) for r in recent}
+        if normalized_new in tried_normalized:
             last_attempt = max(r.timestamp for r in recent)
             if time.time() - last_attempt < self._window_seconds:
                 return False
         
         return True
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for persistence."""
+        return {
+            "error_threshold": self._error_threshold,
+            "no_progress_threshold": self._no_progress_threshold,
+            "window_seconds": self._window_seconds,
+            "recent_errors": list(self._recent_errors),
+            "no_progress_count": dict(self._no_progress_count),
+            "rejection_ledger": [
+                {
+                    "task_id": r.task_id,
+                    "attempt": r.attempt,
+                    "approach": r.approach,
+                    "failure_reason": r.failure_reason,
+                    "evidence": r.evidence,
+                    "timestamp": r.timestamp,
+                }
+                for r in self._rejection_ledger
+            ],
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CircuitBreaker":
+        cb = cls(
+            error_threshold=data["error_threshold"],
+            no_progress_threshold=data["no_progress_threshold"],
+            window_seconds=data["window_seconds"],
+        )
+        cb._recent_errors = [tuple(e) for e in data.get("recent_errors", [])]
+        cb._no_progress_count = dict(data.get("no_progress_count", {}))
+        cb._rejection_ledger = [
+            RejectionEntry(**r) for r in data.get("rejection_ledger", [])
+        ]
+        return cb
+    
+    def save(self, path: str) -> None:
+        import json
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    @classmethod
+    def load(cls, path: str) -> "CircuitBreaker":
+        import json
+        with open(path, "r") as f:
+            return cls.from_dict(json.load(f))
     
     def reset(self, task_id: str) -> None:
         """Reset circuit breaker for a task (after successful completion)."""
@@ -135,8 +180,38 @@ class CircuitBreaker:
         self._no_progress_count.pop(task_id, None)
     
     def get_error_signature(self, error: Exception | str) -> str:
-        """Generate a stable signature for an error."""
+        """Generate a normalized signature for an error.
+        
+        Normalization:
+        - Casefold (lower)
+        - Collapse whitespace
+        - Strip punctuation noise
+        - First line only
+        - Truncate
+        
+        Goal: semantically-equivalent errors get the same signature.
+        """
         if isinstance(error, Exception):
-            # Use exception type + first line of message
-            return f"{type(error).__name__}:{str(error).split(chr(10))[0][:50]}"
-        return str(error)[:100]
+            type_name = type(error).__name__
+            msg = str(error)
+        else:
+            type_name = ""
+            msg = str(error)
+        
+        return f"{type_name}:{_normalize_text(msg)}"
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for semantic equivalence comparison."""
+    import re
+    # First line only
+    line = text.split("\n")[0]
+    # Casefold
+    line = line.casefold()
+    # Strip leading/trailing whitespace
+    line = line.strip()
+    # Collapse internal whitespace
+    line = re.sub(r"\s+", " ", line)
+    # Remove trailing punctuation
+    line = line.rstrip(".,;:!?")
+    return line[:80]

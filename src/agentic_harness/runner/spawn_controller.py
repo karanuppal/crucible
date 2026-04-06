@@ -99,10 +99,15 @@ class SpawnController:
     ) -> None:
         self._graph = run_graph
         self._spawn_fn = spawn_fn or self._default_spawn
-        self._active_runs: dict[str, float] = {}  # run_id -> start_time
+        # run_id -> dict with start_time, timeout, backend_handle
+        self._active_runs: dict[str, dict[str, Any]] = {}
     
     def spawn(self, config: SpawnConfig) -> SpawnResult:
-        """Spawn a new sub-agent run."""
+        """Spawn a new sub-agent run.
+        
+        Returns SpawnResult with run_id set to the GRAPH run_id (not backend handle).
+        Backend handle is tracked separately in active_runs metadata.
+        """
         # Apply role template defaults
         template = ROLE_TEMPLATES.get(config.role, {})
         
@@ -121,39 +126,55 @@ class SpawnController:
         
         # Mark as running
         self._graph.update_status(run_id, RunStatus.RUNNING)
-        self._active_runs[run_id] = time.time()
+        self._active_runs[run_id] = {
+            "start_time": time.time(),
+            "timeout_seconds": config.timeout_seconds,
+            "backend_handle": None,
+        }
         
         # Actually spawn the subprocess
-        result = self._spawn_fn(config)
+        backend_result = self._spawn_fn(config)
         
-        if not result.success:
+        if not backend_result.success:
             self._graph.update_status(run_id, RunStatus.FAILED)
             self._active_runs.pop(run_id, None)
+            return SpawnResult(run_id=run_id, success=False, error=backend_result.error)
         
-        return result
+        # Store backend handle for later reference
+        self._active_runs[run_id]["backend_handle"] = backend_result.run_id
+        
+        # Return graph run_id as the canonical identifier
+        return SpawnResult(run_id=run_id, success=True)
     
     def _default_spawn(self, config: SpawnConfig) -> SpawnResult:
         """Default spawn — override for actual subprocess spawning."""
         return SpawnResult(run_id="", success=False, error="No spawn function configured")
     
     def check_timeouts(self) -> list[str]:
-        """Check for timed-out runs. Returns list of run_ids that timed out."""
+        """Check for timed-out runs using per-run timeout (not just role default).
+        
+        Returns list of run_ids that timed out.
+        Cascade-cancels their blocking children.
+        """
         now = time.time()
         timed_out = []
         
-        for run_id, start_time in list(self._active_runs.items()):
+        for run_id, meta in list(self._active_runs.items()):
             node = self._graph.get(run_id)
             if not node:
                 self._active_runs.pop(run_id, None)
                 continue
             
-            template = ROLE_TEMPLATES.get(node.role, {})
-            timeout = template.get("timeout_seconds", 300)
+            # Use per-run timeout, not role template
+            timeout = meta.get("timeout_seconds") or ROLE_TEMPLATES.get(node.role, {}).get("timeout_seconds", 300)
             
-            if now - start_time > timeout:
-                self._graph.update_status(run_id, RunStatus.TIMED_OUT)
+            if now - meta["start_time"] > timeout:
+                cascaded = self._graph.update_status(run_id, RunStatus.TIMED_OUT)
                 timed_out.append(run_id)
                 self._active_runs.pop(run_id, None)
+                # Clean up any cascaded child active entries
+                for cid in cascaded:
+                    self._active_runs.pop(cid, None)
         
         return timed_out
     
@@ -163,18 +184,26 @@ class SpawnController:
         self._active_runs.pop(run_id, None)
     
     def cancel_blocking_children(self, parent_run_id: str) -> list[str]:
-        """Cancel all blocking children of a run."""
+        """Cancel all blocking children of a run (both PENDING and RUNNING)."""
         cancelled = []
         children = self._graph.get_blocking_children(parent_run_id)
         
         for child_id in children:
             node = self._graph.get(child_id)
-            if node and node.status == RunStatus.RUNNING:
+            if node and node.status in {RunStatus.PENDING, RunStatus.RUNNING}:
                 self._graph.update_status(child_id, RunStatus.KILLED)
                 cancelled.append(child_id)
                 self._active_runs.pop(child_id, None)
         
         return cancelled
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize active run state for persistence."""
+        return {"active_runs": dict(self._active_runs)}
+    
+    def rehydrate(self, data: dict[str, Any]) -> None:
+        """Restore active run tracking from persisted state."""
+        self._active_runs = dict(data.get("active_runs", {}))
     
     def get_active_count(self) -> int:
         return len(self._active_runs)
