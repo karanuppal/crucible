@@ -1,26 +1,25 @@
 # Agentic Harness v5.2
 
 **Status:** In Progress  
-**Ground Truth:** PRD v5.2 + Technical Design v5.2
+**Primary Spec:** `docs/agentic-harness-spec-v5.2.md`
 
 General harness architecture for turning chat-native delegation into reliable, long-running software execution. First implementation surface is OpenClaw.
 
 ## Quick Links
 
+- [Merged Spec v5.2](./docs/agentic-harness-spec-v5.2.md) — Main product + architecture specification
 - [Execution Plan](./EXECUTION_PLAN.md) — Phased implementation breakdown
-- [PRD v5.2](./docs/PRD_v5.2.md) — Product Requirements Document
-- [Technical Design v5.2](./docs/TECHNICAL_DESIGN_v5.2.md) — Technical Architecture
+- [Source PRD v5.2](./docs/agentic-harness-prd-v5.2.md) — Original product requirements source
+- [Source Technical Design v5.2](./docs/agentic-harness-technical-design-v5.2.md) — Original architecture source
 
 ## Implementation Phases
 
-| Phase | Focus | Status |
-|-------|-------|--------|
-| 1 | Deterministic substrate (state, ledger, ambiguity, failures) | ⏳ Not Started |
-| 2 | Sub-agent management cluster (run graph, roles, spawn) | ⏳ Not Started |
-| 3 | Unified project workflows (intake, bootstrap, greenfield) | ⏳ Not Started |
-| 4 | Validation and review (ladder, verification, completion) | ⏳ Not Started |
-| 5 | Scheduling and memory (machine profile, harness memory) | ⏳ Not Started |
-| 6 | Optional accelerators (backend interface, Claude Code) | ⏳ Not Started |
+- Phase 1 — Deterministic substrate (state, ledger, ambiguity, failures)
+- Phase 2 — Sub-agent management cluster (run graph, roles, spawn)
+- Phase 3 — Unified project workflows (intake, bootstrap, greenfield)
+- Phase 4 — Validation and review (ladder, verification, completion)
+- Phase 5 — Scheduling and memory (machine profile, harness memory)
+- Phase 6 — Optional accelerators (backend interface, Claude Code)
 
 ## Core Principles
 
@@ -36,5 +35,7 @@ General harness architecture for turning chat-native delegation into reliable, l
 
 ## Getting Started
 
-See [EXECUTION_PLAN.md](./EXECUTION_PLAN.md) for detailed implementation breakdown.
+Start with the merged spec:
+- [docs/agentic-harness-spec-v5.2.md](./docs/agentic-harness-spec-v5.2.md)
 
+The PRD and technical design remain in the repo as source documents, but the merged spec is now the main reference for collaborators and implementation work.
