@@ -166,112 +166,39 @@ This execution plan breaks down the Agentic Harness v5.2 implementation into 6 p
 
 ---
 
-## Phase 3: Unified Project Workflows
-
-### Duration
-**Estimated:** 3-4 days  
-**Goal:** Existing project intake + greenfield bootstrap → first working version
-
-### Deliverables
-
-#### 3.1 Existing-Project Intake
-- Repository inspection (language, framework, test setup)
-- Branch/worktree isolation for parallel work
-- Task graph from existing code state
-
-#### 3.2 Greenfield Bootstrap
-- Baseline stack selection (web app, CLI, library, API service)
-- Project scaffold generation
-- Local repo creation
-- Remote GitHub repo creation (if credentials available)
-- CI baseline (at least one CI job covering install + test/build)
-- First-working-version gate
-
-#### 3.3 Greenfield Defaults Matrix
-| Project Type | Default Stack |
-|--------------|---------------|
-| Web app | React + Vite + Vitest |
-| CLI | Go or Python + Click |
-| Python library | Poetry + pytest |
-| API service | FastAPI + uvicorn + pytest |
-
-#### 3.4 First-Working-Version Criteria
-- Repo exists locally
-- Remote repo exists (when credentials available)
-- Project scaffold is coherent
-- Local run/build succeeds
-- Minimal CI baseline configured
-- At least one proof artifact exists
-
-### Validation Criteria for Phase 3
-
-| Criterion | How to Validate |
-|-----------|-----------------|
-| Existing project inspection produces accurate data | Test against 3 real repos → verify language/framework detection |
-| Worktree isolation works | Create worktree → verify isolation from main branch |
-| Greenfield produces valid scaffold | Bootstrap 3 project types → verify each runs |
-| Remote repo creation works | Create repo → verify exists on GitHub |
-| CI baseline is functional | Push to remote → verify CI runs and passes |
-| First-working-version gate passes | Complete bootstrap → verify all criteria met |
-
-### Testing Strategy
-
-- **Test repositories:** Create temp repos for testing intake
-- **Greenfield testing:** Bootstrap real projects, verify they build
-- **CI validation:** Real GitHub Actions runs
-
-### Reviewer Agent for Phase 3
-
-**Role:** End-to-End Reviewer (context-isolated)  
-**Focus:**
-- Project intake accuracy
-- Greenfield scaffold quality
-- First-working-version completeness
-- Worktree isolation correctness
-
-**Review Criteria:**
-- [ ] Inspection detects language, framework, test setup correctly
-- [ ] Worktrees are properly isolated from main branch
-- [ ] Greenfield scaffolds are runnable and coherent
-- [ ] GitHub repo creation works (or gracefully degrades)
-- [ ] CI baseline runs and passes
-- [ ] First-working-version criteria are all met
-
----
-
-## Phase 4: Validation and Review
+## Phase 3: Validation and Review Foundation
 
 ### Duration
 **Estimated:** 2-3 days  
-**Goal:** Validation ladder, verification triples, evidence mapping, completion gates
+**Goal:** Build the validation ladder, verification triples, evidence mapping, and completion gates before workflow automation depends on them
 
 ### Deliverables
 
-#### 4.1 Validation Ladder
+#### 3.1 Validation Ladder
 1. Static checks (lint, type check)
 2. Targeted tests
 3. Local build/run checks
 4. Proof/demo artifacts
 5. CI validation
 
-#### 4.2 Verification Triple
+#### 3.2 Verification Triple
 Per task: what to build, how to verify, what failure looks like
 
-#### 4.3 Evidence Mapping
+#### 3.3 Evidence Mapping
 - Each validation result maps to specific spec criteria
 - Evidence stored in ledger with artifact refs
 
-#### 4.4 Reviewer Workflow
+#### 3.4 Reviewer Workflow
 - Reviewer receives: spec, diff, validation outputs
 - Reviewer produces: criterion-by-criterion compliance, escaped defect, untested path, verdict
 
-#### 4.5 Completion Semantics
+#### 3.5 Completion Semantics
 - Must-pass vs informational gate distinction
 - Task-complete conditions
 - Build-complete conditions
 - Anti-vacuity rule: evidence insufficient if it would pass after removing implementation
 
-### Validation Criteria for Phase 4
+### Validation Criteria for Phase 3
 
 | Criterion | How to Validate |
 |-----------|-----------------|
@@ -288,7 +215,7 @@ Per task: what to build, how to verify, what failure looks like
 - **Simulate validation failures** and verify gate behavior
 - **Run reviewer** on sample diffs and verify output structure
 
-### Reviewer Agent for Phase 4
+### Reviewer Agent for Phase 3
 
 **Role:** Validation Reviewer (strict, context-isolated)  
 **Focus:**
@@ -306,40 +233,40 @@ Per task: what to build, how to verify, what failure looks like
 
 ---
 
-## Phase 5: Scheduling and Memory
+## Phase 4: Scheduling and Memory Foundation
 
 ### Duration
 **Estimated:** 2-3 days  
-**Goal:** Machine-aware scheduling, harness memory, project lessons
+**Goal:** Build machine-aware scheduling and harness-owned memory before scaling workflow automation
 
 ### Deliverables
 
-#### 5.1 Machine Profile
+#### 4.1 Machine Profile
 - CPU cores, RAM, swap, free disk, GPU availability
 
-#### 5.2 Task Intensity Classification
+#### 4.2 Task Intensity Classification
 - **light** — review, research, docs, simple edits
 - **medium** — moderate coding, normal tests
 - **heavy** — large builds, heavy test suites, parallel integration
 
-#### 5.3 Adaptive Concurrency Heuristics
+#### 4.3 Adaptive Concurrency Heuristics
 - Preserve CPU headroom
 - Preserve memory headroom
 - Reduce concurrency for heavy tasks
 - Allow higher parallelism for light work
 - Prefer isolated worktrees for parallel builders
 
-#### 5.4 Harness Memory Retrieval/Injection
+#### 4.4 Harness Memory Retrieval/Injection
 - Store/retrieve project-specific context
 - Inject harness memory into sub-agent sessions
 - Distinguish from host conversational memory
 
-#### 5.5 Project Lessons Persistence
+#### 4.5 Project Lessons Persistence
 - Lessons from failures stored in ledger
 - Rejection ledger consulted before retry
 - Lessons survive across builds
 
-### Validation Criteria for Phase 5
+### Validation Criteria for Phase 4
 
 | Criterion | How to Validate |
 |-----------|-----------------|
@@ -355,7 +282,7 @@ Per task: what to build, how to verify, what failure looks like
 - **Scheduler stress test** — run multiple tasks, verify limits respected
 - **Memory persistence test** — write lessons → restart → read lessons
 
-### Reviewer Agent for Phase 5
+### Reviewer Agent for Phase 4
 
 **Role:** Performance Reviewer (context-isolated)  
 **Focus:**
@@ -368,6 +295,82 @@ Per task: what to build, how to verify, what failure looks like
 - [ ] Scheduler prevents resource thrashing
 - [ ] Lessons persist correctly
 - [ ] Harness memory is isolated from host memory
+
+---
+
+## Phase 5: Unified Project Workflows
+
+### Duration
+**Estimated:** 3-4 days  
+**Goal:** Existing project intake + greenfield bootstrap → first working version, now built on top of validation and scheduling foundations
+
+### Deliverables
+
+#### 5.1 Existing-Project Intake
+- Repository inspection (language, framework, test setup)
+- Branch/worktree isolation for parallel work
+- Task graph from existing code state
+
+#### 5.2 Greenfield Bootstrap
+- Baseline stack selection (web app, CLI, library, API service)
+- Project scaffold generation
+- Local repo creation
+- Remote GitHub repo creation (if credentials available)
+- CI baseline (at least one CI job covering install + test/build)
+- First-working-version gate
+
+#### 5.3 Greenfield Defaults Matrix
+| Project Type | Default Stack |
+|--------------|---------------|
+| Web app | Python backend + React frontend, uv for Python env/package management, pytest + Vitest |
+| CLI | Python + Typer, uv, pytest |
+| Python library | Python + uv + pytest |
+| API service | FastAPI + uvicorn + uv + pytest |
+
+#### 5.4 First-Working-Version Criteria
+- Repo exists locally
+- Remote repo exists (when credentials available)
+- Project scaffold is coherent
+- Local run/build succeeds
+- Minimal CI baseline configured
+- At least one proof artifact exists
+
+### Validation Criteria for Phase 5
+
+| Criterion | How to Validate |
+|-----------|-----------------|
+| Existing project inspection produces accurate data | Test against 3 real repos → verify language/framework detection |
+| Worktree isolation works | Create worktree → verify isolation from main branch |
+| Greenfield produces valid scaffold | Bootstrap 3 project types → verify each runs |
+| Remote repo creation works | Create repo → verify exists on GitHub |
+| CI baseline is functional | Push to remote → verify CI runs and passes |
+| First-working-version gate passes | Complete bootstrap → verify all criteria met |
+
+### Testing Strategy
+
+- **Test repositories:** Create temp repos for testing intake
+- **Greenfield testing:** Bootstrap real projects, verify they build
+- **CI validation:** Real GitHub Actions runs
+
+### Reviewer Agent for Phase 5
+
+**Role:** End-to-End Reviewer (context-isolated)  
+**Focus:**
+- Project intake accuracy
+- Greenfield scaffold quality
+- First-working-version completeness
+- Worktree isolation correctness
+- Python/uv default consistency
+
+**Review Criteria:**
+- [ ] Inspection detects language, framework, test setup correctly
+- [ ] Worktrees are properly isolated from main branch
+- [ ] Greenfield scaffolds are runnable and coherent
+- [ ] Python is the default backend choice unless spec requires otherwise
+- [ ] uv is the default Python package/project manager unless spec requires otherwise
+- [ ] GitHub repo creation works (or gracefully degrades)
+- [ ] CI baseline runs and passes
+- [ ] First-working-version criteria are all met
 
 ---
 
@@ -444,9 +447,9 @@ interface ExecutionBackend {
 |-------|----------|------------------|---------------|
 | Phase 1 | 2-3 days | State contracts, ledger, ambiguity gate, failure taxonomy | All 6 state types serializable, append-only ledger enforced |
 | Phase 2 | 3-4 days | Run graph, role templates, spawn controller, circuit breaker | Runs spawn/poll/kill correctly, visibility works |
-| Phase 3 | 3-4 days | Project intake, greenfield bootstrap, first-working-version | Projects bootstrap successfully, CI passes |
-| Phase 4 | 2-3 days | Validation ladder, verification triples, completion gates | Evidence maps to criteria, gates block completion |
-| Phase 5 | 2-3 days | Machine profile, scheduler, harness memory, lessons | Scheduler respects limits, lessons persist |
+| Phase 3 | 2-3 days | Validation ladder, verification triples, evidence mapping, completion gates | Evidence maps to criteria, gates block completion |
+| Phase 4 | 2-3 days | Machine profile, scheduler, harness memory, lessons | Scheduler respects limits, lessons persist |
+| Phase 5 | 3-4 days | Project intake, greenfield bootstrap, first-working-version | Projects bootstrap successfully, CI passes |
 | Phase 6 | 2-3 days | Backend interface, capability routing (optional) | Interface sufficient, routing works |
 
 **Total Estimated Duration:** 14-20 days
