@@ -92,6 +92,8 @@ class TestMustPassGating:
             verdict=CriterionVerdict.PASS,
             evidence_artifacts=[art],
             actual_output="PASSED",
+            executed_command=criterion.triple.verification_command,  # provenance
+            run_id="run-1",
         )
         
         verdict = v.validate("t1", [criterion], [result])

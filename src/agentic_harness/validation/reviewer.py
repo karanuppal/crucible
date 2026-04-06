@@ -60,12 +60,8 @@ class ReviewerInput:
     
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> "ReviewerInput":
-        """Build from raw dict, rejecting forbidden keys."""
-        forbidden = set(raw.keys()) & FORBIDDEN_REVIEWER_INPUT_KEYS
-        if forbidden:
-            raise ValueError(
-                f"Reviewer input contains forbidden builder-private fields: {sorted(forbidden)}"
-            )
+        """Build from raw dict, recursively rejecting forbidden keys at any depth."""
+        validate_reviewer_input(raw)
         
         return cls(
             spec=raw["spec"],
@@ -109,9 +105,20 @@ class ReviewerReport:
 
 
 def validate_reviewer_input(raw: dict[str, Any]) -> None:
-    """Raise ValueError if reviewer input contains forbidden fields."""
-    forbidden = set(raw.keys()) & FORBIDDEN_REVIEWER_INPUT_KEYS
-    if forbidden:
-        raise ValueError(
-            f"Reviewer input contains forbidden builder-private fields: {sorted(forbidden)}"
-        )
+    """Raise ValueError if reviewer input contains forbidden fields ANYWHERE in the tree."""
+    _recursive_forbidden_scan(raw, path="root")
+
+
+def _recursive_forbidden_scan(obj: Any, path: str) -> None:
+    """Walk arbitrary nested dict/list structure, rejecting forbidden keys at any depth."""
+    if isinstance(obj, dict):
+        forbidden = set(obj.keys()) & FORBIDDEN_REVIEWER_INPUT_KEYS
+        if forbidden:
+            raise ValueError(
+                f"Reviewer input contains forbidden builder-private fields at {path}: {sorted(forbidden)}"
+            )
+        for k, v in obj.items():
+            _recursive_forbidden_scan(v, f"{path}.{k}")
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            _recursive_forbidden_scan(item, f"{path}[{i}]")

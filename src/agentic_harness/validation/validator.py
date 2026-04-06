@@ -84,17 +84,31 @@ class Validator:
         # Build criterion lookup
         criteria_by_id = {c.criterion_id: c for c in criteria}
         
-        # Downgrade vacuous PASSes to FAIL
+        # Reject orphan results (results for criteria not in set)
+        for r in results:
+            if r.criterion_id not in criteria_by_id:
+                raise ValueError(
+                    f"Orphan result: criterion {r.criterion_id} not in criteria set"
+                )
+        
+        # Downgrade vacuous PASSes to FAIL — enforce command provenance
         normalized_results: list[CriterionResult] = []
         for r in results:
-            if r.verdict == CriterionVerdict.PASS and not r.has_real_evidence():
-                normalized_results.append(CriterionResult(
-                    criterion_id=r.criterion_id,
-                    verdict=CriterionVerdict.FAIL,
-                    evidence_artifacts=r.evidence_artifacts,
-                    actual_output=r.actual_output,
-                    error="PASS downgraded: no reachable evidence artifacts",
-                ))
+            if r.verdict == CriterionVerdict.PASS:
+                crit = criteria_by_id[r.criterion_id]
+                # Evidence must come from this criterion's verification command
+                if not r.has_real_evidence(expected_command=crit.triple.verification_command):
+                    normalized_results.append(CriterionResult(
+                        criterion_id=r.criterion_id,
+                        verdict=CriterionVerdict.FAIL,
+                        evidence_artifacts=r.evidence_artifacts,
+                        actual_output=r.actual_output,
+                        error="PASS downgraded: evidence provenance failed (missing/wrong-run/wrong-command artifacts)",
+                        executed_command=r.executed_command,
+                        run_id=r.run_id,
+                    ))
+                else:
+                    normalized_results.append(r)
             else:
                 normalized_results.append(r)
         

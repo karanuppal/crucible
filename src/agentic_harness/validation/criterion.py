@@ -79,18 +79,47 @@ class Criterion:
 
 @dataclass
 class CriterionResult:
-    """The result of evaluating a criterion against evidence."""
+    """The result of evaluating a criterion against evidence.
+    
+    Evidence provenance requirements (to prevent recycled-artifact attacks):
+    - executed_command: the exact command that ran
+    - run_id: which run produced the evidence
+    - evidence_artifacts: all must be produced by run_id (checked via producer_run_id)
+    """
     criterion_id: str
     verdict: CriterionVerdict
     evidence_artifacts: list[ArtifactRef] = field(default_factory=list)
     actual_output: str = ""
     error: str = ""
+    executed_command: str = ""  # provenance: command that produced evidence
+    run_id: str = ""  # provenance: which run produced this result
     
     def is_passing(self) -> bool:
         return self.verdict == CriterionVerdict.PASS
     
-    def has_real_evidence(self) -> bool:
-        """PASS verdict requires at least one reachable artifact."""
+    def has_real_evidence(self, expected_command: str = "", expected_run_id: str = "") -> bool:
+        """PASS verdict requires:
+        1. At least one artifact
+        2. All artifacts reachable AND integrity-verified
+        3. If expected_command given: executed_command must match
+        4. If expected_run_id given: run_id must match AND all artifacts from that run
+        """
         if not self.evidence_artifacts:
             return False
-        return all(a.exists() for a in self.evidence_artifacts)
+        # Integrity check (not just existence)
+        if not all(a.exists() and a.verify_integrity() for a in self.evidence_artifacts):
+            return False
+        # Command provenance
+        if expected_command and self.executed_command != expected_command:
+            return False
+        # Run provenance: result must be tagged with run_id AND all artifacts from same run
+        if expected_run_id:
+            if self.run_id != expected_run_id:
+                return False
+            if not all(a.producer_run_id == expected_run_id for a in self.evidence_artifacts):
+                return False
+        elif self.run_id:
+            # Even without expected, if run_id is set, all artifacts should match
+            if not all(a.producer_run_id == self.run_id for a in self.evidence_artifacts):
+                return False
+        return True
