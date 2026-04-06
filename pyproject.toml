@@ -1,0 +1,22 @@
+[project]
+name = "agentic-harness"
+version = "0.1.0"
+description = "General harness architecture for chat-native delegation into reliable, long-running software execution."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy>=1.20.0",
+    "pytest>=9.0.2",
+    "ruff>=0.15.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
