@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -241,7 +242,7 @@ def _run_independent_pytest(project_dir: str) -> tuple[int, int]:
     
     try:
         result = subprocess.run(
-            ["python", "-m", "pytest", "-q", "--no-header"] + test_files,
+            [sys.executable, "-m", "pytest", "-q", "--no-header"] + test_files,
             cwd=project_dir,
             capture_output=True,
             text=True,

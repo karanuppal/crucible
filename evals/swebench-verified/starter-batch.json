@@ -1,0 +1,82 @@
+[
+  {
+    "source": "SWE-bench Verified",
+    "repo": "astropy/astropy",
+    "instance_id": "astropy__astropy-14309",
+    "base_commit": "cdb66059a2feb44ee49021874605ba90801f9986",
+    "difficulty": "<15 min fix",
+    "category": "edge-case bug",
+    "focus": "io.registry / FITS format detection",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/astropy__astropy-14309.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-11133",
+    "base_commit": "879cc3da6249e920b8d54518a0ae06de835d7373",
+    "difficulty": "<15 min fix",
+    "category": "type/interop bug",
+    "focus": "HttpResponse memoryview handling",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-11133.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "astropy/astropy",
+    "instance_id": "astropy__astropy-13033",
+    "base_commit": "298ccb478e6bf092953bca67a3d29dc6c35f6752",
+    "difficulty": "15 min - 1 hour",
+    "category": "validation / error-message correctness",
+    "focus": "TimeSeries required-column exception clarity",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/astropy__astropy-13033.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-11292",
+    "base_commit": "eb16c7260e573ec513d84cb586d96bdf508f3173",
+    "difficulty": "15 min - 1 hour",
+    "category": "small CLI feature",
+    "focus": "management command --skip-checks option",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-11292.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-11333",
+    "base_commit": "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc",
+    "difficulty": "15 min - 1 hour",
+    "category": "optimization / internal behavior",
+    "focus": "URLResolver cache duplication",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-11333.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-13195",
+    "base_commit": "156a2138db20abc89933121e4ff2ee2ce56a173a",
+    "difficulty": "15 min - 1 hour",
+    "category": "API behavior / regression",
+    "focus": "delete_cookie preserves samesite",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-13195.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-14559",
+    "base_commit": "d79be3ed39b76d3e34431873eec16f6dd354ab17",
+    "difficulty": "15 min - 1 hour",
+    "category": "behavioral feature enhancement",
+    "focus": "bulk_update returns matched row count",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-14559.md"
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-14752",
+    "base_commit": "b64db05b9cedd96905d637a2d824cbbf428e40e7",
+    "difficulty": "<15 min fix",
+    "category": "small refactor / extensibility",
+    "focus": "AutocompleteJsonView serialization extension point",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-14752.md"
+  }
+]

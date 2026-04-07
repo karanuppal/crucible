@@ -28,9 +28,13 @@ src/crucible/runner/run_graph.py
 src/crucible/runner/spawn_controller.py
 src/crucible/runtime/__init__.py
 src/crucible/runtime/cli.py
+src/crucible/runtime/local_shell_adapter.py
 src/crucible/runtime/openclaw_adapter.py
+src/crucible/runtime/openclaw_bridge.py
 src/crucible/runtime/openclaw_tool.py
+src/crucible/runtime/plan_loader.py
 src/crucible/runtime/preflight.py
+src/crucible/runtime/run_executor.py
 src/crucible/runtime/run_store.py
 src/crucible/scheduler/__init__.py
 src/crucible/scheduler/intensity.py

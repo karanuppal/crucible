@@ -1,0 +1,41 @@
+[
+  {
+    "source": "SWE-bench Verified",
+    "repo": "astropy/astropy",
+    "instance_id": "astropy__astropy-14309",
+    "base_commit": "cdb66059a2feb44ee49021874605ba90801f9986",
+    "difficulty": "<15 min fix",
+    "category": "edge-case bug",
+    "focus": "io.registry / FITS format detection",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/astropy__astropy-14309.md",
+    "fail_to_pass": [
+      "astropy/io/fits/tests/test_connect.py::test_is_fits_gh_14305"
+    ]
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "django/django",
+    "instance_id": "django__django-11133",
+    "base_commit": "879cc3da6249e920b8d54518a0ae06de835d7373",
+    "difficulty": "<15 min fix",
+    "category": "type/interop bug",
+    "focus": "HttpResponse memoryview handling",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/django__django-11133.md",
+    "fail_to_pass": [
+      "test_memoryview_content (httpwrappers.tests.HttpResponseTests)"
+    ]
+  },
+  {
+    "source": "SWE-bench Verified",
+    "repo": "astropy/astropy",
+    "instance_id": "astropy__astropy-13033",
+    "base_commit": "298ccb478e6bf092953bca67a3d29dc6c35f6752",
+    "difficulty": "15 min - 1 hour",
+    "category": "validation / error-message correctness",
+    "focus": "TimeSeries required-column exception clarity",
+    "problem_statement_path": "docs/evals/swebench-verified/problems/astropy__astropy-13033.md",
+    "fail_to_pass": [
+      "astropy/timeseries/tests/test_sampled.py::test_required_columns"
+    ]
+  }
+]

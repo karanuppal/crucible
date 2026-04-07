@@ -112,6 +112,23 @@ def _exit_to_status(exit_code: int) -> str:
     }.get(exit_code, "error")
 
 
+def _derive_semantic_state(current_status: str, attempts: list[dict[str, Any]] | None = None) -> str:
+    attempts = attempts or []
+    if current_status in {"complete", "failed", "blocked", "partial"}:
+        return current_status
+    if any(a.get("needs_reconciliation") for a in attempts):
+        return "repairing"
+    if any(a.get("is_partial") for a in attempts):
+        return "salvaging"
+    if any((a.get("metadata") or {}).get("attempt_type") == "debug" for a in attempts):
+        return "debugging"
+    if any((a.get("metadata") or {}).get("attempt_type") == "review" for a in attempts):
+        return "reviewing"
+    if attempts:
+        return "building"
+    return current_status or "queued"
+
+
 def _resolve_workspace_root(input_json: dict[str, Any]) -> str:
     from crucible.runtime.run_store import _canonicalize_workspace
     return _canonicalize_workspace(
@@ -258,6 +275,7 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             "run_id": manifest.run_id,
             "run_root": manifest.run_root,
             "terminal_status": summary.terminal_status,
+            "semantic_state": summary.terminal_status,
             "completed_tasks": summary.completed_tasks,
             "failed_tasks": summary.failed_tasks,
             "partial_tasks": summary.partial_tasks,
@@ -316,6 +334,7 @@ def _do_status(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
         out["event_count"] = parsed.get("event_count", 0)
         out["attempts"] = parsed.get("attempts", [])
         out["is_terminal"] = parsed.get("is_terminal", False)
+        out["semantic_state"] = _derive_semantic_state(out["current_status"], out["attempts"])
         if result:
             out["terminal_status"] = result.get("terminal_status", "")
             out["completed_tasks"] = result.get("completed_tasks", [])
@@ -396,6 +415,7 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
                     "terminal_status": result.get("terminal_status", ""),
                     "completed_tasks": result.get("completed_tasks", []),
                     "failed_tasks": result.get("failed_tasks", []),
+                    "semantic_state": result.get("terminal_status", "complete"),
                 })
                 return out
 
@@ -453,6 +473,7 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
                 "failed_tasks": summary.failed_tasks,
                 "partial_tasks": summary.partial_tasks,
                 "blocked_reason": summary.blocked_reason,
+                "semantic_state": summary.terminal_status,
             })
             return out
         finally:
@@ -495,11 +516,13 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             out["terminal_status"] = result.get("terminal_status", "")
             out["completed_tasks"] = result.get("completed_tasks", [])
             out["failed_tasks"] = result.get("failed_tasks", [])
+            out["semantic_state"] = result.get("terminal_status", "")
         if obj.get("event") == "resumed":
             summary = obj.get("summary") or {}
             out["terminal_status"] = summary.get("terminal_status", "")
             out["completed_tasks"] = summary.get("completed_tasks", [])
             out["failed_tasks"] = summary.get("failed_tasks", [])
+            out["semantic_state"] = summary.get("terminal_status", "")
     if stderr:
         out["stderr"] = stderr.strip()
     return out
@@ -524,6 +547,7 @@ def _build_run_response(rc: int, stdout: str, stderr: str) -> dict[str, Any]:
         elif event == "run_terminal":
             summary = obj.get("summary") or {}
             out["terminal_status"] = summary.get("terminal_status", "")
+            out["semantic_state"] = summary.get("terminal_status", "")
             out["completed_tasks"] = summary.get("completed_tasks", [])
             out["failed_tasks"] = summary.get("failed_tasks", [])
             out["partial_tasks"] = summary.get("partial_tasks", [])

@@ -1,0 +1,24 @@
+{
+  "spec": "Resolve SWE-bench Verified instance astropy__astropy-14309 by fixing the astropy io.registry / FITS format detection edge case so identify_format(\"write\", Table, \"bububu.ecsv\", None, [], {}) no longer raises IndexError and the target regression test passes without breaking existing FITS connect behavior.",
+  "project_id": "swebench-verified-astropy",
+  "build_id": "astropy__astropy-14309",
+  "tasks": [
+    {
+      "task_id": "fix-identify-format-edge-case",
+      "description": "In the astropy repo checked out at the benchmark base commit, fix the io.registry / astropy.io.fits.connect path-handling bug that causes identify_format(..., \"bububu.ecsv\", None, [], {}) to raise IndexError, then verify the regression test passes.",
+      "criteria": [
+        {
+          "criterion_id": "c1",
+          "criterion_class": "must_pass",
+          "triple": {
+            "build_target": "astropy/io/fits/connect.py",
+            "verification_command": "python -m pytest astropy/io/fits/tests/test_connect.py::test_is_fits_gh_14305 -q",
+            "expected_output": "1 passed"
+          }
+        }
+      ],
+      "role": "debugger",
+      "intensity_hint": "S"
+    }
+  ]
+}

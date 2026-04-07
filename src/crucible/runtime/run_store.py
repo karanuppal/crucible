@@ -108,6 +108,17 @@ class TaskAttemptRecord:
     error: str = ""
     is_partial: bool = False
     resume_token: str = ""
+    attempt_type: str = "build"
+    parent_attempt_id: str = ""
+    derived_from_attempt_ids: list[str] = field(default_factory=list)
+    workspace_id: str = ""
+    workspace_mode: str = "fresh"
+    failure_packet_ref: str = ""
+    result_evidence_refs: list[str] = field(default_factory=list)
+    review_verdict: str = ""
+    supersedes_attempt_id: str = ""
+    superseded_by_attempt_id: str = ""
+    next_action_chosen: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -131,6 +142,17 @@ class TaskAttemptRecord:
             error=data.get("error", ""),
             is_partial=data.get("is_partial", False),
             resume_token=data.get("resume_token", ""),
+            attempt_type=data.get("attempt_type", "build"),
+            parent_attempt_id=data.get("parent_attempt_id", ""),
+            derived_from_attempt_ids=list(data.get("derived_from_attempt_ids", [])),
+            workspace_id=data.get("workspace_id", ""),
+            workspace_mode=data.get("workspace_mode", "fresh"),
+            failure_packet_ref=data.get("failure_packet_ref", ""),
+            result_evidence_refs=list(data.get("result_evidence_refs", [])),
+            review_verdict=data.get("review_verdict", ""),
+            supersedes_attempt_id=data.get("supersedes_attempt_id", ""),
+            superseded_by_attempt_id=data.get("superseded_by_attempt_id", ""),
+            next_action_chosen=data.get("next_action_chosen", ""),
             metadata=data.get("metadata", {}),
         )
 
