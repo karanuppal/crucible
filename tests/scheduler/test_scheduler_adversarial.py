@@ -62,6 +62,10 @@ class TestWrapperVariants:
         "pytest tests/ -q",
         "npm ci",
         "make test",
+        "env PYTHONPATH=src python -m pytest",
+        "bash -lc 'pytest tests/'",
+        "sh -c 'pytest tests/'",
+        "python -c 'import pytest; pytest.main()'",
     ])
     def test_wrapper_variants_classified_heavy(self, cmd):
         r = classify_intensity(cmd)

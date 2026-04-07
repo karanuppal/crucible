@@ -43,22 +43,48 @@ HEAVY_PATTERNS = [
 
 
 def _normalize_command(cmd: str) -> str:
-    """Strip wrappers like 'python -m', 'uv run', 'env X=y' to expose real command."""
+    """Strip shell/env/wrapper layers to expose the real command.
+    
+    Handles:
+    - leading env var assignments (FOO=bar baz)
+    - env wrapper (env FOO=bar cmd)
+    - shell -c (bash -lc 'cmd', sh -c 'cmd')
+    - python -c "import ...; pytest.main()"
+    - python -m, uv run, poetry run, npx, pipx run
+    """
     import re as _re
     s = cmd.strip()
-    # Strip leading env var assignments (FOO=bar baz)
-    s = _re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+", "", s)
-    # Strip wrappers
-    wrappers = [
-        r"^python\s+-m\s+",
-        r"^python3\s+-m\s+",
-        r"^uv\s+run\s+",
-        r"^poetry\s+run\s+",
-        r"^npx\s+",
-        r"^pipx\s+run\s+",
-    ]
-    for w in wrappers:
-        s = _re.sub(w, "", s)
+    
+    # Iteratively strip layers (some commands have multiple)
+    for _ in range(5):  # cap iterations
+        prev = s
+        # Leading env var assignments
+        s = _re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+", "", s)
+        # `env [-i] [VAR=val ...] cmd`
+        s = _re.sub(r"^env\s+(?:-\S+\s+)*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*", "", s)
+        # Shell wrappers: bash/sh -c '...' or -lc '...'
+        m = _re.match(r"""^(?:ba)?sh\s+-l?c\s+['"](.+)['"]\s*$""", s)
+        if m:
+            s = m.group(1).strip()
+        # python -c 'snippet' — extract pytest.main if present
+        m = _re.match(r"""^python3?\s+-c\s+['"](.+)['"]\s*$""", s)
+        if m:
+            inner = m.group(1)
+            if "pytest" in inner.lower():
+                s = "pytest"  # treat as bare pytest
+        # Wrappers
+        wrappers = [
+            r"^python\s+-m\s+",
+            r"^python3\s+-m\s+",
+            r"^uv\s+run\s+",
+            r"^poetry\s+run\s+",
+            r"^npx\s+",
+            r"^pipx\s+run\s+",
+        ]
+        for w in wrappers:
+            s = _re.sub(w, "", s)
+        if s == prev:
+            break
     return s
 
 

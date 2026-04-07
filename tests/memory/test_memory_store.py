@@ -70,6 +70,24 @@ class TestPersistence:
         s2 = _store_with_runs(tmp_path, ["r1"])
         assert s2.count_active() == 1
     
+    def test_tampered_post_mortem_rejected(self, tmp_path):
+        """Tampered post-mortem triggering_run_id must be rejected on load."""
+        path = str(tmp_path / "mem.json")
+        s1 = _store_with_runs(tmp_path, ["real-run"])
+        pm = s1.record_post_mortem(title="x", triggering_run_id="real-run", summary="x")
+        s1.add_lesson("tip", LessonSource.POST_MORTEM, post_mortem_id=pm.post_mortem_id, tags=["x"])
+        
+        import json
+        with open(path) as f:
+            data = json.load(f)
+        # Tamper: change the post-mortem's triggering_run_id
+        data["post_mortems"][pm.post_mortem_id]["triggering_run_id"] = "fake-run"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        
+        with pytest.raises(HostMemoryLeakError):
+            _store_with_runs(tmp_path, ["real-run"])
+    
     def test_tampered_provenance_rejected(self, tmp_path):
         path = str(tmp_path / "mem.json")
         s1 = _store_with_runs(tmp_path, ["r1"])

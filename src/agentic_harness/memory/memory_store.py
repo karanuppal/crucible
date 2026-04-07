@@ -275,12 +275,18 @@ class MemoryStore:
         
         self._known_run_ids = set(data.get("known_run_ids", []))
         
-        # Load post-mortems
+        # Load post-mortems WITH triggering_run_id validation
         for pid, p_data in data.get("post_mortems", {}).items():
+            triggering_run_id = p_data["triggering_run_id"]
+            if triggering_run_id not in self._known_run_ids:
+                raise HostMemoryLeakError(
+                    f"Persisted post-mortem {pid} has invalid triggering_run_id "
+                    f"'{triggering_run_id}' (possible tamper)"
+                )
             self._post_mortems[pid] = PostMortemRecord(
                 post_mortem_id=p_data["post_mortem_id"],
                 title=p_data["title"],
-                triggering_run_id=p_data["triggering_run_id"],
+                triggering_run_id=triggering_run_id,
                 summary=p_data["summary"],
                 created_at=p_data.get("created_at", 0.0),
             )
