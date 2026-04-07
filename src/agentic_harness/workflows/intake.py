@@ -195,13 +195,29 @@ def inspect_repo(repo_path: str) -> IntakeReport:
     
     # Detect test frameworks (deeper)
     pyproject_path = os.path.join(repo_path, "pyproject.toml")
-    pyproject_text = ""
+    pyproject_tools: dict[str, Any] = {}
+    pyproject_deps: list[str] = []
     if os.path.isfile(pyproject_path):
         try:
-            with open(pyproject_path) as f:
-                pyproject_text = f.read()
+            try:
+                import tomllib  # py3.11+
+            except ImportError:
+                import tomli as tomllib  # type: ignore
+            with open(pyproject_path, "rb") as f:
+                parsed = tomllib.load(f)
+            pyproject_tools = parsed.get("tool", {})
+            project = parsed.get("project", {})
+            pyproject_deps = list(project.get("dependencies", [])) + [
+                d for group in project.get("optional-dependencies", {}).values() for d in group
+            ]
+            # dependency-groups (PEP 735)
+            for group in parsed.get("dependency-groups", {}).values():
+                pyproject_deps.extend(group)
         except Exception:
             pass
+    
+    def _dep_mentions(name: str) -> bool:
+        return any(name in d.lower() for d in pyproject_deps)
     
     for tf, sig in TEST_FRAMEWORK_SIGNATURES.items():
         evidence = []
@@ -212,9 +228,12 @@ def inspect_repo(repo_path: str) -> IntakeReport:
                 if os.path.isfile(os.path.join(repo_path, fn)):
                     evidence.append(fn)
         
-        if "in_pyproject" in sig and sig["in_pyproject"] in pyproject_text:
-            evidence.append(f"pyproject.toml mentions {sig['in_pyproject']}")
-            confidence = Confidence.HIGH
+        # Look in [tool.<name>] table OR in declared dependencies — NOT raw text
+        if "in_pyproject" in sig:
+            tool_name = sig["in_pyproject"]
+            if tool_name in pyproject_tools or _dep_mentions(tool_name):
+                evidence.append(f"pyproject.toml [tool.{tool_name}] or dependency")
+                confidence = Confidence.HIGH
         
         if evidence:
             report.test_frameworks.append(Detection(

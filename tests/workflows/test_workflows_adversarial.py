@@ -18,6 +18,19 @@ from agentic_harness.workflows.first_working_version import check_first_working_
 # ─────────────────────────────────────────────────────────────────
 
 class TestIntakeNoHallucination:
+    def test_pytest_comment_does_not_invent_pytest(self, tmp_path):
+        """The word 'pytest' in a pyproject comment must not classify the repo as using pytest."""
+        (tmp_path / "pyproject.toml").write_text("""# Note: we don't use pytest, prefer unittest
+[project]
+name = "x"
+dependencies = []
+""")
+        (tmp_path / ".git").mkdir()
+        
+        report = inspect_repo(str(tmp_path))
+        # Pytest must NOT be detected from a comment
+        assert not any(d.label == "pytest" for d in report.test_frameworks)
+    
     def test_bare_tests_dir_no_unittest_invented(self, tmp_path):
         """A pyproject.toml + tests/ dir with no real test framework signals
         must NOT invent 'unittest' as a framework."""
@@ -66,6 +79,22 @@ def _init_git_repo(tmp_path):
 
 
 class TestWorktreeReconciliation:
+    def test_git_broken_marks_all_active_stale(self, tmp_path):
+        """If git is broken/unreachable, fail-closed: all active worktrees marked stale."""
+        repo = _init_git_repo(tmp_path)
+        state_path = str(tmp_path / "state.json")
+        
+        mgr1 = WorktreeManager(repo, state_path=state_path)
+        record = mgr1.create_worktree()
+        
+        # Break git: nuke the .git directory
+        shutil.rmtree(os.path.join(repo, ".git"))
+        
+        # Reload — git is broken, must fail closed
+        mgr2 = WorktreeManager(repo, state_path=state_path)
+        loaded = mgr2.get(record.worktree_id)
+        assert loaded.status == "stale"
+    
     def test_missing_worktree_marked_stale(self, tmp_path):
         repo = _init_git_repo(tmp_path)
         state_path = str(tmp_path / "state.json")
@@ -174,7 +203,8 @@ class TestFirstWorkingVersionAntiForgery:
         (tmp_path / "test_real.py").write_text("def test_x(): pass")
         
         script = tmp_path / "fake.sh"
-        script.write_text("#!/bin/bash\necho '1 passed'\nexit 0\n")
+        # Output must reference the actual test file
+        script.write_text("#!/bin/bash\necho 'test_real.py::test_x PASSED'\necho '1 passed'\nexit 0\n")
         script.chmod(0o755)
         
         result = check_first_working_version(
@@ -182,3 +212,19 @@ class TestFirstWorkingVersionAntiForgery:
             test_command=[str(script)],
         )
         assert result.is_working
+    
+    def test_forgery_with_test_file_but_no_reference_rejected(self, tmp_path):
+        """Test file exists but output doesn't reference it → rejected."""
+        (tmp_path / "test_real.py").write_text("def test_x(): pass")
+        
+        script = tmp_path / "fake.sh"
+        # Output says 1 passed but doesn't reference the actual test file
+        script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
+        script.chmod(0o755)
+        
+        result = check_first_working_version(
+            str(tmp_path),
+            test_command=[str(script)],
+        )
+        assert not result.is_working
+        assert "forgery" in result.error.lower() or "reference" in result.error.lower()

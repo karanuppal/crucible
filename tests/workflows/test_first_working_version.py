@@ -38,7 +38,7 @@ class TestGate:
         (tmp_path / "tests" / "test_real.py").write_text("def test_x(): pass\n")
         
         script = tmp_path / "fake_pytest.sh"
-        script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
+        script.write_text("#!/bin/bash\necho 'tests/test_real.py::test_x PASSED'\necho '1 passed in 0.01s'\nexit 0\n")
         script.chmod(0o755)
         
         result = check_first_working_version(

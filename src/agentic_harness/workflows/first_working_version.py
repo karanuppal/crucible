@@ -98,10 +98,31 @@ def check_first_working_version(
     # Parse pytest output for counts
     test_count, passed_count, failed_count = _parse_pytest_output(output)
     
+    # Anti-forgery: output must reference actual test files from the project
+    # (prevents arbitrary scripts that just print "1 passed")
+    test_file_referenced = False
+    if require_real_tests:
+        real_test_files = _list_test_files(project_dir)
+        for tf in real_test_files:
+            basename = os.path.basename(tf)
+            if basename in output:
+                test_file_referenced = True
+                break
+    
     is_working = (
         result.returncode == 0
         and passed_count > 0
+        and (not require_real_tests or test_file_referenced)
     )
+    if not is_working and require_real_tests and not test_file_referenced:
+        return FirstWorkingVersionResult(
+            is_working=False,
+            proof_artifact_path=proof_path,
+            test_count=test_count,
+            passed_count=passed_count,
+            failed_count=failed_count,
+            error="Test output does not reference any real test file in project (forgery suspected)",
+        )
     
     return FirstWorkingVersionResult(
         is_working=is_working,
@@ -115,15 +136,18 @@ def check_first_working_version(
 
 def _has_real_test_files(project_dir: str) -> bool:
     """Check if the project actually contains test files on disk."""
+    return len(_list_test_files(project_dir)) > 0
+
+
+def _list_test_files(project_dir: str) -> list[str]:
+    """List all test_*.py and *_test.py files in the project."""
+    result = []
     for root, dirs, files in os.walk(project_dir):
-        # Skip hidden dirs and venvs
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"__pycache__", "node_modules", ".venv", "venv"}]
         for f in files:
-            if f.startswith("test_") and f.endswith(".py"):
-                return True
-            if f.endswith("_test.py"):
-                return True
-    return False
+            if (f.startswith("test_") and f.endswith(".py")) or f.endswith("_test.py"):
+                result.append(os.path.join(root, f))
+    return result
 
 
 def _parse_pytest_output(output: str) -> tuple[int, int, int]:

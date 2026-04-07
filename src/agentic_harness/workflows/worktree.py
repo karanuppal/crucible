@@ -151,22 +151,38 @@ class WorktreeManager:
         self._reconcile()
     
     def _reconcile(self) -> None:
-        """Mark worktrees as stale if their on-disk path or git state is gone."""
+        """Mark worktrees as stale if their on-disk path or git state is gone.
+        
+        Fail-closed: if git is unreachable/broken, all active worktrees are
+        marked stale (we can't verify them).
+        """
+        # First try to get git's view
+        git_worktree_paths: set[str] | None = None
+        try:
+            result = subprocess.run(
+                ["git", "-C", self._main_repo, "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, check=True,
+            )
+            git_worktree_paths = set()
+            for line in result.stdout.splitlines():
+                if line.startswith("worktree "):
+                    git_worktree_paths.add(line[len("worktree "):].strip())
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Fail-closed: git broken means we can't verify anything
+            git_worktree_paths = None
+        
         for wid, record in self._worktrees.items():
             if record.status != "active":
                 continue
+            # Disk check
             if not os.path.isdir(record.path):
                 record.status = "stale"
                 continue
-            # Check git's view
-            try:
-                result = subprocess.run(
-                    ["git", "-C", self._main_repo, "worktree", "list", "--porcelain"],
-                    capture_output=True, text=True, check=True,
-                )
-                if record.path not in result.stdout:
-                    record.status = "stale"
-            except subprocess.CalledProcessError:
-                pass
+            # Git check (fail-closed)
+            if git_worktree_paths is None:
+                record.status = "stale"
+            elif record.path not in git_worktree_paths:
+                record.status = "stale"
+        
         if self._state_path:
             self._save()
