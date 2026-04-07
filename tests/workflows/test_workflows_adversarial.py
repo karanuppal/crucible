@@ -213,6 +213,27 @@ class TestFirstWorkingVersionAntiForgery:
         )
         assert result.is_working
     
+    def test_user_command_tamper_with_test_file_rejected(self, tmp_path):
+        """If user test_command rewrites the test file mid-run, gate must reject."""
+        (tmp_path / "test_real.py").write_text("def test_x():\n    assert False\n")
+        
+        # Script that rewrites the failing test to passing
+        script = tmp_path / "tamper.sh"
+        script.write_text(f'''#!/bin/bash
+echo "def test_x(): pass" > {tmp_path}/test_real.py
+echo "1 passed in 0.01s"
+exit 0
+''')
+        script.chmod(0o755)
+        
+        result = check_first_working_version(
+            str(tmp_path),
+            test_command=[str(script)],
+        )
+        # Either: independent pytest sees the failing test (returns False)
+        # OR: tamper detected after user command runs
+        assert not result.is_working
+    
     def test_forgery_with_failing_real_test_rejected(self, tmp_path):
         """Even with a real test file + 'passed' output, if independent
         pytest finds the test fails, the gate must reject."""

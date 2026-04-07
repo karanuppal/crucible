@@ -66,26 +66,86 @@ def check_first_working_version(
     
     proof_path = os.path.join(proof_dir, "first_working_version.txt")
     
+    # ─────────────────────────────────────────────────────────────
+    # Anti-forgery sequence (when require_real_tests=True):
+    # 1. Snapshot test file hashes BEFORE any user command runs
+    # 2. Run independent pytest FIRST (source of truth)
+    # 3. Verify file hashes are unchanged after independent pytest
+    # 4. Optionally run user test_command for logging only
+    # ─────────────────────────────────────────────────────────────
+    
+    if require_real_tests:
+        pre_hashes = _hash_test_files(project_dir)
+        independent_passed, independent_total = _run_independent_pytest(project_dir)
+        post_hashes = _hash_test_files(project_dir)
+        
+        if pre_hashes != post_hashes:
+            return FirstWorkingVersionResult(
+                is_working=False,
+                proof_artifact_path="",
+                error="Test files mutated during independent pytest run (tamper detected)",
+            )
+        
+        if independent_total == 0 or independent_passed == 0:
+            return FirstWorkingVersionResult(
+                is_working=False,
+                proof_artifact_path="",
+                test_count=independent_total,
+                passed_count=independent_passed,
+                error=f"Independent pytest: {independent_passed}/{independent_total} passed",
+            )
+        
+        # Now run the user command for logging (proof artifact)
+        try:
+            result = subprocess.run(
+                test_command, cwd=project_dir,
+                capture_output=True, text=True, timeout=300,
+            )
+            user_output = result.stdout + "\n" + result.stderr
+            user_exit = result.returncode
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            user_output = f"USER COMMAND ERROR: {e}"
+            user_exit = -1
+        
+        # Verify files STILL unchanged after user command
+        final_hashes = _hash_test_files(project_dir)
+        if pre_hashes != final_hashes:
+            return FirstWorkingVersionResult(
+                is_working=False,
+                proof_artifact_path="",
+                error="Test files mutated by user test_command (tamper detected)",
+            )
+        
+        with open(proof_path, "w") as f:
+            f.write(f"INDEPENDENT_PYTEST: {independent_passed}/{independent_total} passed\n")
+            f.write(f"USER_COMMAND: {' '.join(test_command)}\n")
+            f.write(f"USER_EXIT: {user_exit}\n")
+            f.write(f"USER_OUTPUT:\n{user_output}\n")
+        
+        return FirstWorkingVersionResult(
+            is_working=True,
+            proof_artifact_path=proof_path,
+            test_count=independent_total,
+            passed_count=independent_passed,
+            failed_count=independent_total - independent_passed,
+        )
+    
+    # require_real_tests=False: trust user command (legacy mode)
     try:
         result = subprocess.run(
-            test_command,
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=300,
+            test_command, cwd=project_dir,
+            capture_output=True, text=True, timeout=300,
         )
     except subprocess.TimeoutExpired:
         with open(proof_path, "w") as f:
             f.write("TIMEOUT")
         return FirstWorkingVersionResult(
-            is_working=False,
-            proof_artifact_path=proof_path,
+            is_working=False, proof_artifact_path=proof_path,
             error="Test command timed out",
         )
     except FileNotFoundError as e:
         return FirstWorkingVersionResult(
-            is_working=False,
-            proof_artifact_path="",
+            is_working=False, proof_artifact_path="",
             error=f"Test command not found: {e}",
         )
     
@@ -95,35 +155,8 @@ def check_first_working_version(
         f.write(f"EXIT_CODE: {result.returncode}\n")
         f.write(f"OUTPUT:\n{output}\n")
     
-    # Parse pytest output for counts
     test_count, passed_count, failed_count = _parse_pytest_output(output)
-    
-    # Anti-forgery: independently run pytest ourselves and use ITS results
-    # as the source of truth. The user's test_command output is logged but
-    # not trusted for the verdict.
-    if require_real_tests:
-        independent_passed, independent_total = _run_independent_pytest(project_dir)
-        if independent_total == 0 or independent_passed == 0:
-            return FirstWorkingVersionResult(
-                is_working=False,
-                proof_artifact_path=proof_path,
-                test_count=independent_total,
-                passed_count=independent_passed,
-                failed_count=independent_total - independent_passed,
-                error=f"Independent pytest run: {independent_passed}/{independent_total} passed (forgery rejected)",
-            )
-        # Use independent counts as truth
-        test_count = independent_total
-        passed_count = independent_passed
-        failed_count = independent_total - independent_passed
-    
-    is_working = passed_count > 0
-    if require_real_tests:
-        # Already verified above
-        pass
-    else:
-        # Trust user command exit code
-        is_working = is_working and result.returncode == 0
+    is_working = passed_count > 0 and result.returncode == 0
     
     return FirstWorkingVersionResult(
         is_working=is_working,
@@ -152,6 +185,19 @@ def _has_real_test_files(project_dir: str) -> bool:
         except (SyntaxError, OSError):
             continue
     return False
+
+
+def _hash_test_files(project_dir: str) -> dict[str, str]:
+    """Snapshot test file content hashes for tamper detection."""
+    import hashlib
+    hashes = {}
+    for path in _list_test_files(project_dir):
+        try:
+            with open(path, "rb") as f:
+                hashes[path] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            continue
+    return hashes
 
 
 def _run_independent_pytest(project_dir: str) -> tuple[int, int]:
