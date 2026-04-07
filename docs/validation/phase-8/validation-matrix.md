@@ -1,7 +1,7 @@
 # Phase 8 Validation Matrix — Production Runtime Surface
 
-**Status:** PASSING (427 tests, 0 failures)
-**Date:** 2026-04-06
+**Status:** PASSING (539 tests, 0 failures)
+**Date:** 2026-04-07
 **Branch:** `phase8-production-runtime`
 
 ---
@@ -13,11 +13,9 @@
 | RunStore (durable) | §26 | 14 | ✅ |
 | Preflight validator | §27 | 19 | ✅ |
 | OpenClaw sub-agent adapter | §28 | 11 | ✅ |
-| CLI (run/status/watch/resume/lint) | §25.3 | 11 | ✅ |
-| Orchestrator wiring (e2e) | §25.3 + §29 | 8 | ✅ |
-| **Total Phase 8 new tests** | | **63** | **✅** |
-| Pre-existing Phase 1–7 tests | | 364 | ✅ |
-| **Grand total** | | **427** | **✅** |
+| Runtime test suite (all files under `tests/runtime/`) | §25.3–§29 | **175** | ✅ |
+| Broader suite (Phases 1–7 + shared modules) | | **364** | ✅ |
+| **Grand total** | | **539** | **✅** |
 
 ---
 
@@ -96,10 +94,11 @@
 
 | Requirement | Verification | Status |
 |---|---|---|
-| Plan → TaskDefinitions → Orchestrator → run_store | `test_run_creates_run_directory` (asserts `result.json` + `terminal_status: complete`) | ✅ |
-| Foreground execution writes events to event log | `test_watch_streams_events` | ✅ |
-| Default in-memory adapter completes successfully | live CLI test (manual) + e2e | ✅ |
-| Embedders can supply custom adapter factory | `run_executor.execute_run(adapter_factory=...)` | ✅ (interface) |
+| Plan → TaskDefinitions → run_store-backed execution → result.json | `test_run_creates_run_directory` (asserts `result.json` + `terminal_status: complete`) | ✅ |
+| Foreground execution writes truthful event log | `test_watch_streams_events`, `test_watch_streaming.py` | ✅ |
+| CLI default backend is `LocalShellAdapter` (real shell execution) | `test_local_shell_adapter.py`, `test_validation_truth.py`, manual smoke | ✅ |
+| OpenClaw wrapper path (`run` → `status` / `watch` / `resume`) is structured and coherent | `test_openclaw_tool.py`, reviewer round 9 | ✅ |
+| Embedders can supply custom adapter factory / bridge-backed path | `run_executor.execute_run(adapter_factory=...)`, `test_openclaw_bridge.py`, `test_bridge_executor_integration.py` | ✅ |
 
 ---
 
@@ -132,8 +131,8 @@ All expected events emitted, persisted, and replayable.
 
 ## Open Items (intentional)
 
-- **Real OpenClaw event bridge:** the `OpenClawSubagentAdapter.ingest_event()` interface is in place, but the host-side code that listens to `subagent_announce` and routes events into the adapter is owned by the OpenClaw embedding layer. The skill (`skills/openclaw/SKILL.md`) documents the contract.
+- **Production caller discipline:** integrations should use an absolute `runs_dir`, or persist/derive it from `run_root`, rather than assuming `run_id` is globally discoverable across cwd changes.
 - **Distributed run store:** v5.3 specifies single-host filesystem only. Multi-host coordination is deferred.
-- **Real backend adapter for production:** the in-memory adapter is the default for the standalone CLI. Production embedders should pass `OpenClawSubagentAdapter` (or another real adapter) via `execute_run(adapter_factory=...)`.
+- **Further hardening:** add explicit wrapper tests that `resume` returns `workspace_root` and `embedding_session_ref`, not just `run_root`.
 
-None of these are blockers for Phase 8 sign-off — they are explicit Phase 9+ scope.
+None of these are blockers for Phase 8 sign-off. The Round-9 reviewer verdict is **READY WITH CONDITIONS**.

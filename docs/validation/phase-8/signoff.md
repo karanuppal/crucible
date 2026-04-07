@@ -3,8 +3,8 @@
 **Phase:** 8 — Production Runtime Surface
 **Spec:** `docs/crucible-spec-v5.3.md`
 **Branch:** `phase8-production-runtime`
-**Date:** 2026-04-06 (rework)
-**Verdict:** ⏳ **PENDING REVIEWER**
+**Date:** 2026-04-07
+**Verdict:** ✅ **READY WITH CONDITIONS**
 
 The previous signoff (also in this directory's git history) was retracted after a GPT-5.4 reviewer found three blockers:
 1. `openclaw_tool.py` had a syntax error and could not import
@@ -26,12 +26,13 @@ This rework addresses all three. The validation plan that drove the rework is at
 | **G5** | `crucible run --detach` and `crucible resume` actually execute (`test_resume_executes.py`) | ✅ |
 | **G6** | Adversarial test pack (`test_adversarial_phase8.py`) | ✅ |
 | **G7** | Full suite + manual smoke | ✅ |
-| **G8** | Fresh GPT-5.4 reviewer pass | ⏳ pending |
+| **G8** | Fresh GPT-5.4 reviewer pass | ✅ `openclaw-readiness-review-r9.md` |
 
 ## Test results
 
-- **479 tests passing**, 0 failures
-- 52 new Phase 8 tests added in the rework (on top of the 63 already in place)
+- **539 tests passing**, 0 failures
+- Rework gates covered by targeted runtime packs plus a green full-suite run (`uv run pytest`)
+- Round-9 reviewer verdict: **READY WITH CONDITIONS** (`openclaw-readiness-review-r9.md`)
 - Adversarial pack covers: malformed JSON, vague language, no-must-pass, factory exceptions, no backends, spawn exceptions, idempotent terminal events, restart-then-resume, unknown run_id × 3 commands
 
 ## Manual smoke test
@@ -80,6 +81,16 @@ This separation is what makes signoff trustworthy. A build can use whatever mode
 - The default `LocalShellAdapter` does not itself produce artifacts. To use Crucible end-to-end with a real build agent, embedders must drive the build via the OpenClaw bridge before/alongside the verification step. The skill (`skills/openclaw/SKILL.md`) needs to be updated to reflect this — TODO before final signoff.
 - Multi-host distributed run store still deferred to Phase 9+.
 
-## Next step
+## Remaining conditions (non-blocking)
 
-Spawn fresh GPT-5.4 reviewer to validate G8. If the reviewer finds anything critical, fix and re-spawn until clean.
+Per `openclaw-readiness-review-r9.md`, the remaining items are operating conditions / hardening follow-ups, not signoff blockers:
+
+- Use an **absolute `runs_dir`** in production integrations whenever possible
+- Persist `runs_dir` explicitly, or derive it from the returned `run_root`
+- Treat lower-level runtime modules as internal APIs unless you also pass explicit path context
+- Add follow-up test assertions that `resume` returns `workspace_root` and `embedding_session_ref`
+
+## Reviewer record
+
+- Round 9 reviewer verdict: **READY WITH CONDITIONS**
+- Reviewer file: `docs/validation/phase-8/openclaw-readiness-review-r9.md`
