@@ -114,12 +114,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     normalized = lint.normalized_plan or plan
     
     # Resolve workspace_root upfront so we can persist it on the manifest
+    from crucible.runtime.run_store import _canonicalize_workspace
     workspace_root = (
         args.workspace_root
         or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
         or os.getcwd()
     )
-    workspace_root = os.path.abspath(workspace_root)
+    workspace_root = _canonicalize_workspace(workspace_root)
     
     # Create run store
     runs_root = args.runs_dir or default_runs_root()
@@ -356,9 +357,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # --workspace-root override that doesn't match. Otherwise the run
     # record (manifest says A) becomes inconsistent with execution
     # (events show work happened in B).
+    from crucible.runtime.run_store import _canonicalize_workspace
     cli_override = getattr(args, "workspace_root", None)
     if cli_override:
-        cli_override = os.path.abspath(cli_override)
+        cli_override = _canonicalize_workspace(cli_override)
     
     if manifest.workspace_root:
         # Manifest already pinned a workspace. Override must match (or be absent).

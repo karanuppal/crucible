@@ -189,7 +189,9 @@ class TestManifestBackwardCompat:
         store = RunStore(str(run_root))
         manifest = store.read_manifest()
         assert manifest.run_id == "run-future"
-        assert manifest.workspace_root == "/tmp/work"
+        # /tmp may be a symlink (macOS: /private/tmp); canonicalization
+        # resolves the realpath. Check both.
+        assert manifest.workspace_root in {"/tmp/work", "/private/tmp/work"}
 
 
 class TestResumeWithoutWorkspaceRoot:

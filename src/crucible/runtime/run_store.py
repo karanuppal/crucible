@@ -323,13 +323,31 @@ class RunStore:
     # ─── Manifest ───
     
     def write_manifest(self, manifest: RunManifest) -> None:
+        # Round-6 fix: canonicalize workspace_root at every write so a
+        # manifest can never end up with a relative or non-canonical path.
+        if manifest.workspace_root:
+            manifest.workspace_root = _canonicalize_workspace(manifest.workspace_root)
         _atomic_write_json(self.manifest_path, manifest.to_dict())
     
     def read_manifest(self) -> RunManifest | None:
         if not os.path.isfile(self.manifest_path):
             return None
         with open(self.manifest_path) as f:
-            return RunManifest.from_dict(json.load(f))
+            manifest = RunManifest.from_dict(json.load(f))
+        # Round-6 fix: any non-canonical workspace_root on disk (e.g. left
+        # over by an older Crucible version or hand-edited) is canonicalized
+        # at read time so downstream code never sees an ambiguous relative path.
+        if manifest.workspace_root:
+            canonical = _canonicalize_workspace(manifest.workspace_root)
+            if canonical != manifest.workspace_root:
+                manifest.workspace_root = canonical
+                # Persist the canonical form back to disk so future reads are stable.
+                # Best-effort: don't fail read if write fails (e.g. read-only fs).
+                try:
+                    _atomic_write_json(self.manifest_path, manifest.to_dict())
+                except OSError:
+                    pass
+        return manifest
     
     def update_manifest_status(self, current_phase: str, current_status: str) -> None:
         m = self.read_manifest()
@@ -513,6 +531,22 @@ class RunStore:
             f.write(f"{time.time():.3f} {line}\n")
 
 
+def _canonicalize_workspace(path: str) -> str:
+    """Resolve a workspace path to its canonical absolute form.
+    
+    Strips trailing slashes, resolves symlinks via realpath, and makes
+    the path absolute. Returns "" if input is empty/falsy.
+    
+    This is the single source of truth for how workspace_root is stored
+    in the manifest. Both create-time and resume-override paths must
+    flow through this function so that comparisons and pinning are
+    consistent regardless of how the user typed the path.
+    """
+    if not path:
+        return ""
+    return os.path.realpath(os.path.abspath(path))
+
+
 def create_run_store(
     *,
     run_id: str | None,
@@ -547,7 +581,7 @@ def create_run_store(
         embedding_surface=embedding_surface,
         embedding_session_ref=embedding_session_ref,
         ledger_ref=ledger_ref,
-        workspace_root=workspace_root,
+        workspace_root=_canonicalize_workspace(workspace_root),
     )
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)
