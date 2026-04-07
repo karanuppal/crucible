@@ -30,6 +30,8 @@ class RunRecord:
     started_at: float
     finished_at: float
     artifact_ids: list[str] = field(default_factory=list)
+    # Map artifact_id -> content_hash (authoritative binding)
+    artifact_hashes: dict[str, str] = field(default_factory=dict)
 
 
 class RunRegistry:
@@ -54,7 +56,7 @@ class RunRegistry:
         stderr: str,
         started_at: float,
         finished_at: float,
-        artifact_ids: list[str] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> RunRecord:
         """Record a verification run. Only recorded runs can be used as provenance."""
         run_id = f"vrun-{uuid.uuid4().hex[:12]}"
@@ -68,6 +70,7 @@ class RunRegistry:
         with open(stderr_path, "w") as f:
             f.write(stderr)
         
+        arts = list(artifacts or [])
         record = RunRecord(
             run_id=run_id,
             command=command,
@@ -76,7 +79,8 @@ class RunRegistry:
             stderr_path=stderr_path,
             started_at=started_at,
             finished_at=finished_at,
-            artifact_ids=list(artifact_ids or []),
+            artifact_ids=[a.artifact_id for a in arts],
+            artifact_hashes={a.artifact_id: a.content_hash for a in arts},
         )
         self._records[run_id] = record
         if self._path:
@@ -97,7 +101,10 @@ class RunRegistry:
         Returns True iff:
         1. Run exists in registry
         2. Run command matches expected_command
-        3. Artifact is listed in run's artifact_ids
+        3. Artifact ID is listed in run's artifact_ids
+        4. Artifact content_hash matches the hash recorded at run time
+           (prevents artifact_id collision/substitution attacks)
+        5. Artifact file on disk verifies against its recorded hash
         """
         record = self._records.get(run_id)
         if record is None:
@@ -105,6 +112,14 @@ class RunRegistry:
         if record.command != expected_command:
             return False
         if artifact.artifact_id not in record.artifact_ids:
+            return False
+        # Hash binding: the submitted artifact must have the exact hash
+        # recorded when the run was registered
+        recorded_hash = record.artifact_hashes.get(artifact.artifact_id)
+        if recorded_hash is None or recorded_hash != artifact.content_hash:
+            return False
+        # Integrity: file on disk must still match its hash
+        if not artifact.verify_integrity():
             return False
         return True
     
@@ -119,6 +134,7 @@ class RunRegistry:
                 "started_at": r.started_at,
                 "finished_at": r.finished_at,
                 "artifact_ids": list(r.artifact_ids),
+                "artifact_hashes": dict(r.artifact_hashes),
             }
             for rid, r in self._records.items()
         }

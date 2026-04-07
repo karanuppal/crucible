@@ -58,6 +58,16 @@ ALLOWED_VERDICT_KEYS = {
     "criterion_results",
 }
 
+ALLOWED_ARTIFACT_REF_KEYS = {
+    "artifact_id",
+    "type",
+    "path",
+    "content_hash",
+    "producer_run_id",
+    "created_at",
+    "immutable",
+}
+
 # Explicitly forbidden fields (builder-private)
 FORBIDDEN_REVIEWER_INPUT_KEYS = {
     "builder_rationale",
@@ -144,6 +154,17 @@ def validate_reviewer_input(raw: dict[str, Any]) -> None:
     if "validation_verdict" in raw and isinstance(raw["validation_verdict"], dict):
         _strict_allowlist_check(
             raw["validation_verdict"], ALLOWED_VERDICT_KEYS, path="validation_verdict"
+        )
+    if "artifact_refs" in raw and isinstance(raw["artifact_refs"], list):
+        for i, ar in enumerate(raw["artifact_refs"]):
+            if isinstance(ar, dict):
+                _strict_allowlist_check(
+                    ar, ALLOWED_ARTIFACT_REF_KEYS, path=f"artifact_refs[{i}]"
+                )
+    # diffs must be a plain string — reject dict/list payloads
+    if "diffs" in raw and not isinstance(raw["diffs"], str):
+        raise ValueError(
+            f"Reviewer input at diffs must be a string, got {type(raw['diffs']).__name__}"
         )
 
 

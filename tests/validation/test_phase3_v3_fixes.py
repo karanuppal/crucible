@@ -111,10 +111,10 @@ class TestRunRegistryProvenance:
         p = tmp_path / "out.log"
         p.write_text("PASSED")
         
-        # Create artifact FIRST to get its ID
+        # Create artifact FIRST to get its ID and hash
         art = create_artifact_ref(str(p), ArtifactType.LOG, "placeholder")
         
-        # Record the run in registry, linking to artifact
+        # Record the run in registry, linking to the actual artifact (with hash)
         record = registry.record_run(
             command=cmd,
             exit_code=0,
@@ -122,7 +122,7 @@ class TestRunRegistryProvenance:
             stderr="",
             started_at=time.time(),
             finished_at=time.time(),
-            artifact_ids=[art.artifact_id],
+            artifacts=[art],
         )
         
         # Update the artifact's producer_run_id to match
@@ -149,7 +149,7 @@ class TestRunRegistryProvenance:
             stderr="",
             started_at=1.0,
             finished_at=2.0,
-            artifact_ids=["a1"],
+            artifacts=[],
         )
         
         r2 = RunRegistry(path)
