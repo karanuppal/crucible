@@ -72,24 +72,25 @@ def _make_orchestrator(tmp_path, router=None):
 
 
 class TestHappyPath:
-    def test_full_loop_runs_all_phases(self, tmp_path):
+    def test_full_loop_completes_with_real_evidence(self, tmp_path):
+        """When backend reports COMPLETE, orchestrator should produce real
+        evidence and validate to completion."""
         orch = _make_orchestrator(tmp_path)
         tasks = [_make_task("t1"), _make_task("t2")]
         
         state = orch.run_build("test spec", tasks)
         
-        # Orchestrator ran every phase (terminal state set)
-        assert state.current_phase in {OrchestratorPhase.DONE, OrchestratorPhase.BLOCKED}
-        # All tasks routed through validation (either completed or failed)
-        total = len(state.completed_tasks) + len(state.failed_tasks)
-        assert total == 2
+        assert state.current_phase == OrchestratorPhase.DONE
+        assert "t1" in state.completed_tasks
+        assert "t2" in state.completed_tasks
+        assert state.failed_tasks == []
     
     def test_phase_transitions_recorded(self, tmp_path):
         orch = _make_orchestrator(tmp_path)
         tasks = [_make_task()]
         
         state = orch.run_build("spec", tasks)
-        assert state.current_phase in {OrchestratorPhase.DONE, OrchestratorPhase.BLOCKED}
+        assert state.current_phase == OrchestratorPhase.DONE
 
 
 class TestAmbiguityGate:

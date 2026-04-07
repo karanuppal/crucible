@@ -36,7 +36,7 @@
 | State persisted | test_state_persisted | reload roundtrip | ✅ |
 | Resume repairs missing artifacts | test_resume_repairs_missing_artifacts | _verify_step_artifacts re-runs | ✅ |
 | Resume doesn't claim false complete | test_resume_doesnt_falsely_claim_complete | rebuilds when artifacts missing | ✅ |
-| GitHub remote creation (optional) | (gh CLI integration) | create_github_repo + push_to_github steps | ✅ |
+| GitHub remote creation (optional) | not unit-tested (requires gh auth) | code present, BootstrapState serialization preserved, idempotent on existing repo | ⚠️ code-present, integration test pending |
 
 ## First-Working-Version Gate
 

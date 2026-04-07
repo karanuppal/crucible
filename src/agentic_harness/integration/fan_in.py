@@ -108,9 +108,13 @@ class FanInIntegrator:
                 error=f"Failed to create integration branch: {e.stderr}",
             )
         
+        # Pre-flight: detect overlaps so conflict reports can attribute properly
+        overlap_map = self.detect_overlap(outputs)
+        
         # Step 2: merge each output's branch
         conflicts: list[IntegrationConflict] = []
         integrated_paths: list[str] = []
+        already_merged_tasks: list[str] = []
         
         for output in outputs:
             try:
@@ -123,9 +127,13 @@ class FanInIntegrator:
                     # Conflict — collect and abort this merge
                     conflict_files = self._get_conflict_files()
                     for cf in conflict_files:
+                        # Use overlap map to attribute ALL tasks touching this file
+                        attributed = list(overlap_map.get(cf, [output.task_id]))
+                        if output.task_id not in attributed:
+                            attributed.append(output.task_id)
                         conflicts.append(IntegrationConflict(
                             file_path=cf,
-                            conflicting_task_ids=[output.task_id],
+                            conflicting_task_ids=attributed,
                             description=merge_result.stderr[:200],
                         ))
                     subprocess.run(
@@ -134,6 +142,7 @@ class FanInIntegrator:
                     )
                 else:
                     integrated_paths.extend(output.artifact_paths)
+                    already_merged_tasks.append(output.task_id)
             except subprocess.CalledProcessError as e:
                 return IntegrationResult(
                     status=IntegrationStatus.FAILED,

@@ -58,6 +58,25 @@ class TestResume:
         assert result.is_complete
 
 
+class TestGitHubFieldsPersistence:
+    def test_github_fields_roundtrip(self, tmp_path):
+        from agentic_harness.workflows.greenfield import BootstrapState
+        config = BootstrapConfig(
+            project_name="proj",
+            project_type=ProjectType.PYTHON_LIB,
+            target_dir=str(tmp_path / "proj"),
+            create_github_repo=True,
+            github_owner="myorg",
+            github_visibility="public",
+        )
+        state = BootstrapState(config=config)
+        d = state.to_dict()
+        loaded = BootstrapState.from_dict(d)
+        assert loaded.config.create_github_repo is True
+        assert loaded.config.github_owner == "myorg"
+        assert loaded.config.github_visibility == "public"
+
+
 class TestPersistence:
     def test_state_persisted(self, tmp_path):
         config = _config(tmp_path)
