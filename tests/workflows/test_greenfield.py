@@ -36,7 +36,9 @@ class TestBootstrap:
     def test_all_steps_completed(self, tmp_path):
         config = _config(tmp_path)
         state = bootstrap_greenfield(config)
-        for step in ALL_STEPS:
+        # Default config has create_github_repo=False, so github steps are skipped
+        non_github_steps = [s for s in ALL_STEPS if "github" not in s]
+        for step in non_github_steps:
             assert step in state.completed_steps
 
 
@@ -54,6 +56,25 @@ class TestResume:
         
         result = bootstrap_greenfield(config, state_path=state_path, state=loaded)
         assert result.is_complete
+
+
+class TestGitHubFieldsPersistence:
+    def test_github_fields_roundtrip(self, tmp_path):
+        from agentic_harness.workflows.greenfield import BootstrapState
+        config = BootstrapConfig(
+            project_name="proj",
+            project_type=ProjectType.PYTHON_LIB,
+            target_dir=str(tmp_path / "proj"),
+            create_github_repo=True,
+            github_owner="myorg",
+            github_visibility="public",
+        )
+        state = BootstrapState(config=config)
+        d = state.to_dict()
+        loaded = BootstrapState.from_dict(d)
+        assert loaded.config.create_github_repo is True
+        assert loaded.config.github_owner == "myorg"
+        assert loaded.config.github_visibility == "public"
 
 
 class TestPersistence:
