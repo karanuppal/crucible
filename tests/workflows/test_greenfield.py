@@ -36,7 +36,9 @@ class TestBootstrap:
     def test_all_steps_completed(self, tmp_path):
         config = _config(tmp_path)
         state = bootstrap_greenfield(config)
-        for step in ALL_STEPS:
+        # Default config has create_github_repo=False, so github steps are skipped
+        non_github_steps = [s for s in ALL_STEPS if "github" not in s]
+        for step in non_github_steps:
             assert step in state.completed_steps
 
 

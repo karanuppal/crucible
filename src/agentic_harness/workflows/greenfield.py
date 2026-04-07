@@ -27,6 +27,10 @@ class BootstrapConfig:
     target_dir: str
     description: str = ""
     python_version: str = "3.13"
+    # GitHub remote creation (optional — skipped if create_github_repo=False)
+    create_github_repo: bool = False
+    github_owner: str = ""  # owner/org for the new repo
+    github_visibility: str = "private"  # private | public
 
 
 @dataclass
@@ -82,6 +86,8 @@ STEP_WRITE_GITIGNORE = "write_gitignore"
 STEP_WRITE_CI = "write_ci"
 STEP_GIT_INIT = "git_init"
 STEP_GIT_INITIAL_COMMIT = "git_initial_commit"
+STEP_CREATE_GITHUB_REPO = "create_github_repo"
+STEP_PUSH_TO_GITHUB = "push_to_github"
 
 ALL_STEPS = [
     STEP_CREATE_DIR,
@@ -91,6 +97,8 @@ ALL_STEPS = [
     STEP_WRITE_CI,
     STEP_GIT_INIT,
     STEP_GIT_INITIAL_COMMIT,
+    STEP_CREATE_GITHUB_REPO,
+    STEP_PUSH_TO_GITHUB,
 ]
 
 
@@ -127,6 +135,25 @@ def _verify_step_artifacts(step_id: str, config: BootstrapConfig) -> bool:
                 check=True, capture_output=True,
             )
             return True
+        except subprocess.CalledProcessError:
+            return False
+    if step_id == STEP_CREATE_GITHUB_REPO:
+        # Best-effort: check via gh
+        try:
+            result = subprocess.run(
+                ["gh", "repo", "view", f"{config.github_owner}/{config.project_name}"],
+                capture_output=True, text=True,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
+    if step_id == STEP_PUSH_TO_GITHUB:
+        try:
+            result = subprocess.run(
+                ["git", "-C", target, "remote", "get-url", "origin"],
+                capture_output=True, text=True,
+            )
+            return result.returncode == 0
         except subprocess.CalledProcessError:
             return False
     return False
@@ -181,6 +208,10 @@ def bootstrap_greenfield(
     _step(STEP_WRITE_CI, lambda: _write_ci(config))
     _step(STEP_GIT_INIT, lambda: _git_init(config))
     _step(STEP_GIT_INITIAL_COMMIT, lambda: _git_initial_commit(config))
+    
+    if config.create_github_repo:
+        _step(STEP_CREATE_GITHUB_REPO, lambda: _create_github_repo(config))
+        _step(STEP_PUSH_TO_GITHUB, lambda: _push_to_github(config))
     
     state.is_complete = True
     state.failed_step = ""
@@ -292,6 +323,75 @@ def _git_init(config: BootstrapConfig) -> None:
         ["git", "init", "-q"],
         cwd=config.target_dir, check=True, capture_output=True,
     )
+
+
+def _create_github_repo(config: BootstrapConfig) -> None:
+    """Create a GitHub remote repo using the gh CLI.
+    
+    Requires gh to be authenticated. Skips if config.create_github_repo is False.
+    """
+    if not config.github_owner:
+        raise BootstrapError("github_owner required when create_github_repo=True")
+    
+    repo_full = f"{config.github_owner}/{config.project_name}"
+    visibility_flag = f"--{config.github_visibility}"
+    
+    # Check if gh is available
+    try:
+        subprocess.run(
+            ["gh", "auth", "status"],
+            check=True, capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        raise BootstrapError(f"gh CLI not authenticated: {e}") from e
+    
+    try:
+        subprocess.run(
+            ["gh", "repo", "create", repo_full, visibility_flag,
+             "--description", config.description or config.project_name],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # If repo already exists, treat as success (idempotent resume)
+        if "already exists" in (e.stderr or ""):
+            return
+        raise BootstrapError(f"gh repo create failed: {e.stderr}") from e
+
+
+def _push_to_github(config: BootstrapConfig) -> None:
+    """Add origin remote and push initial commit."""
+    repo_full = f"{config.github_owner}/{config.project_name}"
+    remote_url = f"https://github.com/{repo_full}.git"
+    
+    # Add remote (idempotent: skip if already added)
+    try:
+        result = subprocess.run(
+            ["git", "-C", config.target_dir, "remote", "get-url", "origin"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["git", "-C", config.target_dir, "remote", "add", "origin", remote_url],
+                check=True, capture_output=True, text=True,
+            )
+    except subprocess.CalledProcessError as e:
+        raise BootstrapError(f"Failed to add origin: {e.stderr}") from e
+    
+    # Push main
+    try:
+        subprocess.run(
+            ["git", "-C", config.target_dir, "push", "-u", "origin", "main"],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Branch may be 'master' on older git
+        try:
+            subprocess.run(
+                ["git", "-C", config.target_dir, "push", "-u", "origin", "HEAD:main"],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as e2:
+            raise BootstrapError(f"git push failed: {e2.stderr}") from e2
 
 
 def _git_initial_commit(config: BootstrapConfig) -> None:
