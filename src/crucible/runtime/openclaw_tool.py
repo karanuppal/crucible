@@ -250,12 +250,31 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
     if runs_dir:
         args.extend(["--runs-dir", runs_dir])
     args.extend(["resume", str(run_id), "--jsonl"])
+    if input_json.get("workspace_root"):
+        args.extend(["--workspace-root", str(input_json["workspace_root"])])
     rc, stdout, stderr = _execute(args, _cli_env(input_json), timeout=600)
     
     out: dict[str, Any] = {"exit_code": rc, "status": _exit_to_status(rc), "run_id": run_id}
     if rc == 4:
         out["message"] = f"unknown run_id: {run_id}"
         return out
+    
+    # Round-8 fix: the wrapper docstring promises run_root is always present
+    # after resume. Look it up directly from the run store rather than hoping
+    # the CLI prints it (it doesn't, by design — resume reuses the existing
+    # run_root from the manifest).
+    try:
+        from crucible.runtime.run_store import load_run_store, default_runs_root
+        store = load_run_store(run_id, runs_root=runs_dir or default_runs_root())
+        if store is not None:
+            out["run_root"] = store.run_root
+            manifest = store.read_manifest()
+            if manifest:
+                out["workspace_root"] = manifest.workspace_root
+                out["embedding_session_ref"] = manifest.embedding_session_ref
+    except Exception:
+        # Best-effort; don't break the wrapper if introspection fails
+        pass
     
     parsed_lines = _parse_jsonl(stdout)
     for obj in parsed_lines:
