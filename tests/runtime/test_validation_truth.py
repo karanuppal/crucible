@@ -14,8 +14,17 @@ import pytest
 CLI = [sys.executable, "-m", "crucible.runtime.cli"]
 
 
-def _run(args, timeout=30):
-    return subprocess.run(CLI + args, capture_output=True, text=True, timeout=timeout)
+def _run(args, timeout=30, cwd=None):
+    return subprocess.run(CLI + args, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+
+
+def _ensure_target(workspace, target):
+    """Create the build_target file inside workspace so the executor's
+    target-existence check passes."""
+    full = os.path.join(workspace, target)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w") as f:
+        f.write("# stub for tests\n")
 
 
 def _plan(*, command, expected, build_target="src/foo.py"):
@@ -77,7 +86,10 @@ class TestValidationTruth:
     def test_passing_command_passes_task(self, tmp_path):
         plan = _plan(command="echo 'all tests PASSED here'", expected="PASSED")
         path = _write(tmp_path, plan)
-        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path])
+        # Create the build_target file so the existence check passes
+        _ensure_target(str(tmp_path), "src/foo.py")
+        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
+                  "--workspace-root", str(tmp_path)])
         assert r.returncode == 0, f"got {r.returncode}: {r.stdout}\n{r.stderr}"
         assert "terminal_status: complete" in r.stdout
     
@@ -121,7 +133,10 @@ class TestValidationTruth:
             ],
         }
         path = _write(tmp_path, plan)
-        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path])
+        _ensure_target(str(tmp_path), "src/good.py")
+        _ensure_target(str(tmp_path), "src/bad.py")
+        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
+                  "--workspace-root", str(tmp_path)])
         assert r.returncode == 3
         assert "partial" in r.stdout.lower() or "failed" in r.stdout.lower()
         # Verify the result.json says partial
@@ -135,13 +150,44 @@ class TestValidationTruth:
     def test_event_stream_records_criterion_outcomes(self, tmp_path):
         plan = _plan(command="echo PASSED_HERE", expected="PASSED_HERE")
         path = _write(tmp_path, plan)
-        _run(["--runs-dir", str(tmp_path / "runs"), "run", path])
+        _ensure_target(str(tmp_path), "src/foo.py")
+        _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
+              "--workspace-root", str(tmp_path)])
         run_dir = list((tmp_path / "runs").iterdir())[0]
         events = (run_dir / "events.jsonl").read_text().strip().split("\n")
         types = [json.loads(e)["type"] for e in events if e]
         assert "criterion_dispatched" in types
         assert "criterion_passed" in types
         assert "task_completed" in types
+    
+    def test_semantic_bypass_blocked(self, tmp_path):
+        """Round-2 reviewer's killer test: passing command + nonexistent target → fail.
+        
+        echo PASS_OK exits 0 and prints PASS_OK, but build_target src/nonexistent.py
+        does not exist on disk. The harness MUST NOT mark this complete.
+        """
+        plan = _plan(
+            command="echo PASS_OK",
+            expected="PASS_OK",
+            build_target="src/nonexistent_target.py",
+        )
+        path = _write(tmp_path, plan)
+        # Deliberately do NOT create the target file
+        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
+                  "--workspace-root", str(tmp_path)])
+        assert r.returncode == 3, (
+            f"semantic bypass not blocked: exit={r.returncode}\nstdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "terminal_status: failed" in r.stdout
+    
+    def test_existing_target_with_passing_command_passes(self, tmp_path):
+        """Sanity: if the build_target really exists, a real pass should still pass."""
+        plan = _plan(command="echo PASSED_OK", expected="PASSED_OK", build_target="src/realfile.py")
+        path = _write(tmp_path, plan)
+        _ensure_target(str(tmp_path), "src/realfile.py")
+        r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
+                  "--workspace-root", str(tmp_path)])
+        assert r.returncode == 0, f"got {r.returncode}\n{r.stdout}\n{r.stderr}"
     
     def test_failure_event_recorded(self, tmp_path):
         plan = _plan(command="false", expected="NEVER_GONNA_HAPPEN")

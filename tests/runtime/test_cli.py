@@ -22,7 +22,7 @@ def _good_plan_json(tmp_path):
                     "criterion_id": "c1",
                     "criterion_class": "must_pass",
                     "triple": {
-                        "build_target": "src/foo.py",
+                        "build_target": "non-path-target",
                         "verification_command": "echo 'all PASSED here'",
                         "expected_output": "PASSED",
                         "failure_signature": "FAILED",

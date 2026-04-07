@@ -121,7 +121,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         build_id=normalized["build_id"],
         spec_text=normalized.get("spec", ""),
         task_plan=normalized,
-        embedding_surface=args.embedding or "",
+        embedding_surface=args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", ""),
+        embedding_session_ref=os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", ""),
         runs_root=runs_root,
     )
     
@@ -167,11 +168,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     def _default_factory(s: RunStore):
         return [LocalShellAdapter()]
     
+    workspace_root = (
+        args.workspace_root
+        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        or os.getcwd()
+    )
+    
     summary = execute_run(
         store=store,
         manifest=manifest,
         plan=normalized,
         adapter_factory=_default_factory,
+        workspace_root=workspace_root,
     )
     
     if args.jsonl:
@@ -233,21 +241,41 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
+    import time as _time
     runs_root = args.runs_dir or default_runs_root()
     store = load_run_store(args.run_id, runs_root=runs_root)
     if store is None:
         sys.stderr.write(f"unknown run_id: {args.run_id}\n")
         return 4
     
-    events = store.read_events(from_event_id=args.from_event)
+    def _emit_events(events):
+        if args.jsonl:
+            for e in events:
+                _emit_jsonl(e.to_dict())
+        else:
+            for e in events:
+                loc = f"[{e.task_id}]" if e.task_id else ""
+                print(f"{e.timestamp:.0f} {e.type:30s} {loc} {json.dumps(e.payload)}")
     
-    if args.jsonl:
-        for e in events:
-            _emit_jsonl(e.to_dict())
-    else:
-        for e in events:
-            loc = f"[{e.task_id}]" if e.task_id else ""
-            print(f"{e.timestamp:.0f} {e.type:30s} {loc} {json.dumps(e.payload)}")
+    seen_event_ids: set[str] = set()
+    initial = store.read_events(from_event_id=args.from_event)
+    for e in initial:
+        seen_event_ids.add(e.event_id)
+    _emit_events(initial)
+    
+    if args.follow and not store.is_terminal():
+        deadline = _time.time() + max(1, args.follow_timeout)
+        while _time.time() < deadline:
+            _time.sleep(min(0.25, max(0.0, deadline - _time.time())))
+            new_events = []
+            for e in store.read_events():
+                if e.event_id not in seen_event_ids:
+                    new_events.append(e)
+                    seen_event_ids.add(e.event_id)
+            if new_events:
+                _emit_events(new_events)
+            if store.is_terminal():
+                break
     
     if store.is_terminal():
         result = store.read_result()
@@ -333,6 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--detach", action="store_true", help="background execution")
     p_run.add_argument("--jsonl", action="store_true", help="JSONL event output")
     p_run.add_argument("--embedding", default="", help="embedding surface name (e.g. openclaw)")
+    p_run.add_argument("--workspace-root", default=None, help="directory verification commands run in")
     p_run.set_defaults(func=cmd_run)
     
     p_status = sub.add_parser("status", help="snapshot a run's state")
@@ -344,6 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("run_id")
     p_watch.add_argument("--jsonl", action="store_true")
     p_watch.add_argument("--from", dest="from_event", default=None)
+    p_watch.add_argument("--follow", action="store_true", help="poll for new events until terminal")
+    p_watch.add_argument("--follow-timeout", type=int, default=600, dest="follow_timeout")
     p_watch.set_defaults(func=cmd_watch)
     
     p_resume = sub.add_parser("resume", help="re-enter an interrupted run")

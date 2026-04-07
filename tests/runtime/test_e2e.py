@@ -36,7 +36,7 @@ def _good_plan():
                         "criterion_id": "c1",
                         "criterion_class": "must_pass",
                         "triple": {
-                            "build_target": "src/foo.py",
+                            "build_target": "non-path-target",
                             "verification_command": "echo 'OK_FOO is here'",
                             "expected_output": "OK_FOO",
                         },

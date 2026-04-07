@@ -53,13 +53,19 @@ def execute_run(
     plan: dict[str, Any],
     adapter_factory: AdapterFactory,
     per_criterion_timeout_seconds: int = 60,
+    workspace_root: str | None = None,
 ) -> RunSummary:
     """Run every must_pass criterion in the plan via the adapter, honestly.
     
     Returns a RunSummary that reflects ACTUAL verification outcomes.
+    
+    workspace_root is the directory build_targets are resolved against
+    and that verification commands run in. Defaults to os.getcwd() but
+    embedders should pass it explicitly.
     """
     start = time.time()
-    store.append_event("orchestrator_started", payload={})
+    workspace_root = os.path.abspath(workspace_root or os.getcwd())
+    store.append_event("orchestrator_started", payload={"workspace_root": workspace_root})
     store.update_manifest_status("execute", "running")
     
     # Build adapters
@@ -84,9 +90,21 @@ def execute_run(
     partial: list[str] = []
     blockers: list[str] = []
     
+    # Pre-compute already-winning tasks (for resume incremental mode)
+    existing_winners = {
+        a.task_id for a in store.list_attempts()
+        if a.winning_attempt and a.status == AdapterStatus.COMPLETE.value
+    }
+    
     for task_idx, task in enumerate(tasks):
         task_id = task["task_id"]
         criteria = task.get("criteria", [])
+        
+        # Skip if a winning attempt already exists from a prior run
+        if task_id in existing_winners:
+            store.append_event("task_skipped_already_complete", task_id=task_id, payload={})
+            completed.append(task_id)
+            continue
         
         store.append_event("task_dispatched", task_id=task_id, payload={
             "role": task.get("role", "builder"),
@@ -130,7 +148,7 @@ def execute_run(
             spec = AdapterRunSpec(
                 spec_id=f"{task_id}.{crit_id}",
                 prompt=cmd,
-                cwd=os.getcwd(),
+                cwd=workspace_root,
                 timeout_seconds=per_criterion_timeout_seconds,
                 required_capabilities={Capability.SHELL_EXEC},
                 metadata={
@@ -151,6 +169,21 @@ def execute_run(
             try:
                 handle = primary.spawn(spec)
                 result = primary.collect(handle)
+            except FileNotFoundError as e:
+                # Specifically a missing CWD or shell — treat as adapter crash
+                per_criterion_results.append({
+                    "criterion_id": crit_id,
+                    "criterion_class": crit_class,
+                    "verdict": "fail",
+                    "reason": f"adapter raised: {e}",
+                })
+                if crit_class == "must_pass":
+                    all_must_pass_passed = False
+                    task_blockers.append(f"criterion {crit_id} adapter crash: {e}")
+                store.append_event("criterion_failed", task_id=task_id, payload={
+                    "criterion_id": crit_id, "error": str(e),
+                })
+                continue
             except Exception as e:
                 per_criterion_results.append({
                     "criterion_id": crit_id,
@@ -167,6 +200,37 @@ def execute_run(
                 continue
             
             verdict = "pass" if result.status == AdapterStatus.COMPLETE else "fail"
+            
+            # Anti-semantic-bypass guard: if the verification "passed" but
+            # the declared build_target does not exist on disk relative to
+            # the workspace root, the run is suspect. The whole point of the
+            # triple is that build_target is the artifact under test; a green
+            # run with a missing target is meaningless.
+            #
+            # build_target may be:
+            #  - a file path (e.g. "src/foo.py")
+            #  - a directory path (e.g. "tests/")
+            #  - a non-path token (e.g. "all unit tests") — heuristic: contains a slash or ends in .py/.js/.ts/.md
+            target_check_skipped = True
+            target_exists = False
+            if verdict == "pass" and build_target:
+                looks_like_path = (
+                    "/" in build_target
+                    or any(build_target.endswith(ext) for ext in
+                           (".py", ".js", ".ts", ".md", ".rs", ".go", ".java", ".cpp", ".c", ".h"))
+                )
+                if looks_like_path:
+                    target_check_skipped = False
+                    abs_target = build_target if os.path.isabs(build_target) else os.path.join(workspace_root, build_target)
+                    target_exists = os.path.exists(abs_target)
+                    if not target_exists:
+                        verdict = "fail"
+                        store.append_event("build_target_missing", task_id=task_id, payload={
+                            "criterion_id": crit_id,
+                            "build_target": build_target,
+                            "expected_at": abs_target,
+                        })
+            
             per_criterion_results.append({
                 "criterion_id": crit_id,
                 "criterion_class": crit_class,
@@ -174,6 +238,8 @@ def execute_run(
                 "adapter_status": result.status.value,
                 "summary": result.summary,
                 "error": result.error,
+                "build_target_checked": not target_check_skipped,
+                "build_target_exists": target_exists if not target_check_skipped else None,
             })
             
             event_type = "criterion_passed" if verdict == "pass" else "criterion_failed"

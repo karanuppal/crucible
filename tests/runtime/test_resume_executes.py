@@ -18,7 +18,7 @@ def _run(args, timeout=30):
     return subprocess.run(CLI + args, capture_output=True, text=True, timeout=timeout)
 
 
-def _good_plan(cmd="echo PASSED_OK", expected="PASSED_OK"):
+def _good_plan(cmd="echo PASSED_OK", expected="PASSED_OK", build_target="non-path-target"):
     return {
         "spec": "resume execution test",
         "project_id": "resume-test",
@@ -31,7 +31,7 @@ def _good_plan(cmd="echo PASSED_OK", expected="PASSED_OK"):
                     "criterion_id": "c1",
                     "criterion_class": "must_pass",
                     "triple": {
-                        "build_target": "src/foo.py",
+                        "build_target": build_target,
                         "verification_command": cmd,
                         "expected_output": expected,
                     },

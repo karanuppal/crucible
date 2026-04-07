@@ -32,9 +32,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from crucible.accelerators.adapters import (
-    AdapterRunSpec, AdapterStatus,
+    BackendAdapter, AdapterRunSpec, AdapterRunHandle, AdapterRunResult, AdapterStatus,
 )
-from crucible.runtime.openclaw_adapter import OpenClawSubagentAdapter
+from crucible.accelerators.capabilities import BackendCapabilities, Capability
+from crucible.runtime.openclaw_adapter import (
+    OpenClawSubagentAdapter, default_openclaw_capabilities,
+)
 from crucible.runtime.run_store import RunStore
 
 
@@ -244,3 +247,78 @@ class SessionsSpawnBridge:
             summary=result.summary,
             error=result.error,
         )
+
+
+# ─────────────────────────────────────────────────────────────────
+# BackendAdapter that drives a bridge synchronously
+# ─────────────────────────────────────────────────────────────────
+
+class BridgeBackedAdapter(BackendAdapter):
+    """Wraps any bridge object as a BackendAdapter for the executor.
+    
+    Why this exists: `execute_run()` only knows the BackendAdapter
+    contract — `spawn()` then `collect()`. A bridge needs a wait step
+    in between. This adapter does spawn+wait inside spawn() so the
+    executor's existing sync flow Just Works.
+    
+    Accepts either a SimulatedOpenClawBridge or a SessionsSpawnBridge.
+    The bridge must expose `run_spec_to_completion(spec)`.
+    """
+    
+    def __init__(
+        self,
+        bridge: Any,
+        *,
+        backend_id: str = "openclaw-bridge",
+        capabilities: BackendCapabilities | None = None,
+        wait_timeout_seconds: float = 600.0,
+    ) -> None:
+        self._bridge = bridge
+        self._backend_id = backend_id
+        self._caps = capabilities or default_openclaw_capabilities(backend_id)
+        self._wait_timeout = wait_timeout_seconds
+        self._results: dict[str, AdapterRunResult] = {}
+    
+    def backend_id(self) -> str:
+        return self._backend_id
+    
+    def declared_capabilities(self) -> BackendCapabilities:
+        return self._caps
+    
+    def spawn(self, spec: AdapterRunSpec) -> AdapterRunHandle:
+        # Run the bridge to completion synchronously, then store the result.
+        outcome = self._bridge.run_spec_to_completion(
+            spec, timeout_seconds=self._wait_timeout
+        )
+        result = AdapterRunResult(
+            handle_id=outcome.handle_id,
+            status=outcome.status,
+            artifact_paths=outcome.artifact_paths,
+            summary=outcome.summary,
+            error=outcome.error,
+        )
+        self._results[outcome.handle_id] = result
+        return AdapterRunHandle(
+            handle_id=outcome.handle_id,
+            backend_id=self._backend_id,
+            spawned_at=time.time(),
+            spec_id=spec.spec_id,
+        )
+    
+    def poll(self, handle: AdapterRunHandle) -> AdapterStatus:
+        result = self._results.get(handle.handle_id)
+        return result.status if result else AdapterStatus.FAILED
+    
+    def collect(self, handle: AdapterRunHandle) -> AdapterRunResult:
+        result = self._results.get(handle.handle_id)
+        if result is None:
+            return AdapterRunResult(
+                handle_id=handle.handle_id,
+                status=AdapterStatus.FAILED,
+                error="unknown handle",
+            )
+        return result
+    
+    def kill(self, handle: AdapterRunHandle) -> None:
+        # Bridge is sync — by the time spawn() returns, work is done.
+        pass
