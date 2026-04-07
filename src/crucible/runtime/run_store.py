@@ -56,7 +56,13 @@ class RunManifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunManifest":
-        return cls(**data)
+        # Backward-compat: ignore unknown fields and supply defaults for any
+        # missing fields. This lets old runs load with newer code (or vice
+        # versa) without crashing.
+        import dataclasses as _dc
+        known = {f.name for f in _dc.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)
 
 
 @dataclass
@@ -186,16 +192,34 @@ def new_run_id() -> str:
 
 
 def _atomic_write_json(path: str, data: Any) -> None:
-    tmp = path + ".tmp"
+    """Write JSON atomically. Uses a per-call unique tmp file so concurrent
+    writers don't collide on a shared path.tmp."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _hash_text(text: str) -> str:
     import hashlib
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+class RunLockError(Exception):
+    """Raised when a run is already locked by another process."""
 
 
 class RunStore:
@@ -210,10 +234,61 @@ class RunStore:
         os.makedirs(os.path.join(self._run_root, "adapter-state"), exist_ok=True)
         os.makedirs(os.path.join(self._run_root, "attempts"), exist_ok=True)
         os.makedirs(os.path.join(self._run_root, "artifacts"), exist_ok=True)
+        self._lock_fd: int | None = None
     
     @property
     def run_root(self) -> str:
         return self._run_root
+    
+    @property
+    def lock_path(self) -> str:
+        return os.path.join(self._run_root, "run.lock")
+    
+    def acquire_lock(self) -> None:
+        """Acquire an exclusive write lock on this run.
+        
+        Raises RunLockError if another process holds the lock.
+        Uses fcntl.flock on POSIX. Auto-released when the process exits
+        or release_lock() is called.
+        """
+        import fcntl
+        if self._lock_fd is not None:
+            return  # already held by this instance
+        fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as e:
+            os.close(fd)
+            raise RunLockError(
+                f"run {os.path.basename(self._run_root)} is already locked by another process"
+            ) from e
+        # Write our pid for debugging
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+        except OSError:
+            pass
+        self._lock_fd = fd
+    
+    def release_lock(self) -> None:
+        if self._lock_fd is None:
+            return
+        import fcntl
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._lock_fd)
+        except OSError:
+            pass
+        self._lock_fd = None
+    
+    def __enter__(self) -> "RunStore":
+        return self
+    
+    def __exit__(self, *args) -> None:
+        self.release_lock()
     
     @property
     def manifest_path(self) -> str:

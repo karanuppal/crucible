@@ -60,6 +60,7 @@ class TestResumeIncremental:
             run_id=None, project_id=normalized["project_id"], build_id=normalized["build_id"],
             spec_text=normalized.get("spec", ""), task_plan=normalized,
             runs_root=runs_dir,
+            workspace_root=str(tmp_path),
         )
         
         # First execution: should run the verification (counter → 1)
@@ -217,6 +218,7 @@ class TestResumeIncremental:
             run_id=None, project_id=normalized["project_id"], build_id=normalized["build_id"],
             spec_text=normalized.get("spec", ""), task_plan=normalized,
             runs_root=runs_dir,
+            workspace_root=str(tmp_path),
         )
         
         # First execution

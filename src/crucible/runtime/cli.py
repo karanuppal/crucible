@@ -145,6 +145,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"run_id: {manifest.run_id}")
         print(f"run_root: {manifest.run_root}")
     
+    # Acquire write lock for foreground execution
+    from crucible.runtime.run_store import RunLockError
+    
     if args.detach:
         # Detached: spawn a background process running this same CLI in
         # foreground mode against the existing run dir via the resume path.
@@ -177,13 +180,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     def _default_factory(s: RunStore):
         return [LocalShellAdapter()]
     
-    summary = execute_run(
-        store=store,
-        manifest=manifest,
-        plan=normalized,
-        adapter_factory=_default_factory,
-        workspace_root=workspace_root,
-    )
+    try:
+        store.acquire_lock()
+    except RunLockError as e:
+        sys.stderr.write(f"{e}\n")
+        return 5
+    
+    try:
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=normalized,
+            adapter_factory=_default_factory,
+            workspace_root=workspace_root,
+        )
+    finally:
+        store.release_lock()
     
     if args.jsonl:
         _emit_jsonl({"event": "run_terminal", "summary": summary.to_dict()})
@@ -291,11 +303,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
+    from crucible.runtime.run_store import RunLockError
     runs_root = args.runs_dir or default_runs_root()
     store = load_run_store(args.run_id, runs_root=runs_root)
     if store is None:
         sys.stderr.write(f"unknown run_id: {args.run_id}\n")
         return 4
+    
+    # Acquire write lock — fails if another resume is already in flight.
+    try:
+        store.acquire_lock()
+    except RunLockError as e:
+        sys.stderr.write(f"{e}\n")
+        if args.jsonl:
+            _emit_jsonl({"event": "lock_busy", "run_id": args.run_id})
+        return 5
     
     if store.is_terminal():
         result = store.read_result()
@@ -323,20 +345,34 @@ def cmd_resume(args: argparse.Namespace) -> int:
     def _factory(s: RunStore):
         return [LocalShellAdapter()]
     
-    # Restore workspace_root from manifest (round-3 reviewer blocker fix)
+    # Restore workspace_root from manifest. Round-4 fix: refuse to silently
+    # fall back to cwd if the manifest doesn't have one (e.g. older runs
+    # created before workspace_root was persisted). The user must pass
+    # --workspace-root on resume, or set CRUCIBLE_WORKSPACE_ROOT env var.
     workspace_root = (
-        manifest.workspace_root
+        getattr(args, "workspace_root", None)
+        or manifest.workspace_root
         or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
-        or os.getcwd()
     )
+    if not workspace_root:
+        sys.stderr.write(
+            f"run {args.run_id} was created without workspace_root and no "
+            f"--workspace-root override was provided. Refusing to resume in "
+            f"ambient cwd ({os.getcwd()}). Pass --workspace-root explicitly.\n"
+        )
+        store.release_lock()
+        return 1
     
-    summary = execute_run(
-        store=store,
-        manifest=manifest,
-        plan=plan,
-        adapter_factory=_factory,
-        workspace_root=workspace_root,
-    )
+    try:
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=plan,
+            adapter_factory=_factory,
+            workspace_root=workspace_root,
+        )
+    finally:
+        store.release_lock()
     
     if args.jsonl:
         _emit_jsonl({
@@ -391,6 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume = sub.add_parser("resume", help="re-enter an interrupted run")
     p_resume.add_argument("run_id")
     p_resume.add_argument("--jsonl", action="store_true")
+    p_resume.add_argument("--workspace-root", default=None,
+                          help="override workspace_root (required if manifest doesn't have one)")
     p_resume.set_defaults(func=cmd_resume)
     
     return parser

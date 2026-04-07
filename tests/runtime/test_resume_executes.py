@@ -65,6 +65,7 @@ class TestResumeExecution:
             spec_text=normalized.get("spec", ""),
             task_plan=normalized,
             runs_root=runs_dir,
+            workspace_root=str(tmp_path),
         )
         
         # Run should NOT be terminal yet
@@ -93,6 +94,7 @@ class TestResumeExecution:
             spec_text=normalized.get("spec", ""),
             task_plan=normalized,
             runs_root=runs_dir,
+            workspace_root=str(tmp_path),
         )
         
         r = _run(["--runs-dir", runs_dir, "resume", manifest.run_id])
