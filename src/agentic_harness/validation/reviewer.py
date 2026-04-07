@@ -138,29 +138,59 @@ class ReviewerReport:
 def validate_reviewer_input(raw: dict[str, Any]) -> None:
     """Strict allowlist validation of reviewer input.
     
-    Only explicitly allowed keys are permitted. Unknown keys at ANY depth
-    are rejected. This replaces denylist scanning with a strict contract.
+    Rules:
+    - Only explicitly allowed keys at any depth
+    - Structural types enforced (criteria must be list-of-dict, verdict must be dict, etc.)
+    - List items that aren't the expected type are rejected
     """
     _strict_allowlist_check(raw, ALLOWED_REVIEWER_INPUT_KEYS, path="root")
-    # Deep structural checks
+    
+    # spec must be string
+    if "spec" in raw and not isinstance(raw["spec"], str):
+        raise ValueError(f"spec must be str, got {type(raw['spec']).__name__}")
+    
+    # criteria must be list-of-dict
     if "criteria" in raw:
+        if not isinstance(raw["criteria"], list):
+            raise ValueError("criteria must be a list")
         for i, c in enumerate(raw["criteria"]):
-            if isinstance(c, dict):
-                _strict_allowlist_check(c, ALLOWED_CRITERION_KEYS, path=f"criteria[{i}]")
-                if "triple" in c and isinstance(c["triple"], dict):
-                    _strict_allowlist_check(
-                        c["triple"], ALLOWED_TRIPLE_KEYS, path=f"criteria[{i}].triple"
-                    )
-    if "validation_verdict" in raw and isinstance(raw["validation_verdict"], dict):
+            if not isinstance(c, dict):
+                raise ValueError(f"criteria[{i}] must be a dict, got {type(c).__name__}")
+            _strict_allowlist_check(c, ALLOWED_CRITERION_KEYS, path=f"criteria[{i}]")
+            if "triple" in c:
+                if not isinstance(c["triple"], dict):
+                    raise ValueError(f"criteria[{i}].triple must be a dict")
+                _strict_allowlist_check(
+                    c["triple"], ALLOWED_TRIPLE_KEYS, path=f"criteria[{i}].triple"
+                )
+                # Triple fields must all be strings
+                for tkey, tval in c["triple"].items():
+                    if not isinstance(tval, str):
+                        raise ValueError(
+                            f"criteria[{i}].triple.{tkey} must be str, got {type(tval).__name__}"
+                        )
+    
+    # validation_verdict must be a dict (NOT a list)
+    if "validation_verdict" in raw:
+        if not isinstance(raw["validation_verdict"], dict):
+            raise ValueError(
+                f"validation_verdict must be a dict, got {type(raw['validation_verdict']).__name__}"
+            )
         _strict_allowlist_check(
             raw["validation_verdict"], ALLOWED_VERDICT_KEYS, path="validation_verdict"
         )
-    if "artifact_refs" in raw and isinstance(raw["artifact_refs"], list):
+    if "artifact_refs" in raw:
+        if not isinstance(raw["artifact_refs"], list):
+            raise ValueError("artifact_refs must be a list")
         for i, ar in enumerate(raw["artifact_refs"]):
-            if isinstance(ar, dict):
-                _strict_allowlist_check(
-                    ar, ALLOWED_ARTIFACT_REF_KEYS, path=f"artifact_refs[{i}]"
+            if not isinstance(ar, dict):
+                raise ValueError(
+                    f"artifact_refs[{i}] must be a dict, got {type(ar).__name__}"
                 )
+            _strict_allowlist_check(
+                ar, ALLOWED_ARTIFACT_REF_KEYS, path=f"artifact_refs[{i}]"
+            )
+            if True:
                 # Type-check values: all scalar fields must be scalars,
                 # not nested dicts/lists that could smuggle builder framing
                 _SCALAR_ARTIFACT_FIELDS = {

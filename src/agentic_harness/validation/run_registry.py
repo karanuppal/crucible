@@ -72,6 +72,10 @@ class RunRegistry:
             f.write(stderr)
         
         arts = list(artifacts or [])
+        # Stamp producer_run_id on each artifact before fingerprinting
+        # so the registry is the source of truth for producer linkage
+        for a in arts:
+            a.producer_run_id = run_id
         record = RunRecord(
             run_id=run_id,
             command=command,
@@ -87,6 +91,8 @@ class RunRegistry:
                     "path": a.path,
                     "type": a.type.value,
                     "immutable": a.immutable,
+                    "created_at": a.created_at,
+                    "producer_run_id": a.producer_run_id,
                 }
                 for a in arts
             },
@@ -135,6 +141,10 @@ class RunRegistry:
         if recorded_fp["type"] != artifact.type.value:
             return False
         if recorded_fp["immutable"] != artifact.immutable:
+            return False
+        if recorded_fp["created_at"] != artifact.created_at:
+            return False
+        if recorded_fp.get("producer_run_id") != artifact.producer_run_id:
             return False
         # Integrity: file on disk must still match its hash
         if not artifact.verify_integrity():
