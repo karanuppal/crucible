@@ -114,7 +114,7 @@ class TestScalarVerdictFields:
                 "builder_rationale": "hidden",
             }]),
         }
-        with pytest.raises(ValueError, match="forbidden"):
+        with pytest.raises(ValueError, match="forbidden|disallowed"):
             ReviewerInput.from_raw(raw)
 
 

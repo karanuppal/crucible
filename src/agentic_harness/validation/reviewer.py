@@ -68,6 +68,15 @@ ALLOWED_ARTIFACT_REF_KEYS = {
     "immutable",
 }
 
+ALLOWED_CRITERION_RESULT_KEYS = {
+    "criterion_id",
+    "verdict",
+    "actual_output",
+    "error",
+    "executed_command",
+    "run_id",
+}
+
 # Explicitly forbidden fields (builder-private)
 FORBIDDEN_REVIEWER_INPUT_KEYS = {
     "builder_rationale",
@@ -214,8 +223,19 @@ def validate_reviewer_input(raw: dict[str, Any]) -> None:
                     raise ValueError(
                         f"validation_verdict.criterion_results[{j}] must be a dict"
                     )
-                # Recursive forbidden-key scan on criterion_result dicts
-                _deep_forbidden_scan(cr, f"validation_verdict.criterion_results[{j}]")
+                # Strict allowlist: no unknown keys at all
+                _strict_allowlist_check(
+                    cr, ALLOWED_CRITERION_RESULT_KEYS,
+                    path=f"validation_verdict.criterion_results[{j}]",
+                )
+                # Every field in criterion_results must be a scalar string
+                # (no nested dicts/lists under 'details', 'context', etc.)
+                for cr_key, cr_val in cr.items():
+                    if not isinstance(cr_val, str):
+                        raise ValueError(
+                            f"validation_verdict.criterion_results[{j}].{cr_key} "
+                            f"must be str, got {type(cr_val).__name__}"
+                        )
     if "artifact_refs" in raw:
         if not isinstance(raw["artifact_refs"], list):
             raise ValueError("artifact_refs must be a list")
