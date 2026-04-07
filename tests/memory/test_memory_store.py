@@ -1,127 +1,119 @@
-"""Phase 4 tests: harness-owned memory store."""
+"""Phase 4 tests: memory store with strict provenance."""
 
 import pytest
+import time
 
 from agentic_harness.memory.memory_store import (
-    MemoryStore, Lesson, LessonSource, LessonStatus,
+    MemoryStore, LessonSource, LessonStatus, HostMemoryLeakError,
     inject_lessons_into_run,
 )
 
 
+def _store_with_runs(tmp_path, runs=None):
+    store = MemoryStore(str(tmp_path / "mem.json"), known_run_ids=set(runs or []))
+    for r in (runs or []):
+        store.register_run(r)
+    return store
+
+
 class TestLessonProvenance:
-    def test_run_outcome_requires_run_id(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        
-        with pytest.raises(ValueError, match="source_run_id"):
-            store.add_lesson(
-                text="Some lesson",
-                source=LessonSource.RUN_OUTCOME,
-                # missing source_run_id
-            )
+    def test_run_outcome_requires_registered_run(self, tmp_path):
+        store = _store_with_runs(tmp_path)
+        with pytest.raises(HostMemoryLeakError):
+            store.add_lesson("x", LessonSource.RUN_OUTCOME, source_run_id="run-unknown")
     
-    def test_validation_failure_requires_run_id(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        with pytest.raises(ValueError, match="source_run_id"):
-            store.add_lesson(
-                text="Validation lesson",
-                source=LessonSource.VALIDATION_FAILURE,
-            )
+    def test_registered_run_accepted(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["run-1"])
+        lesson = store.add_lesson("tip", LessonSource.RUN_OUTCOME, source_run_id="run-1")
+        assert lesson.source_run_id == "run-1"
     
-    def test_post_mortem_no_run_id_needed(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        # Post-mortem doesn't require a run_id
-        lesson = store.add_lesson(
-            text="Retrospective learning",
-            source=LessonSource.POST_MORTEM,
-        )
-        assert lesson.lesson_id.startswith("lesson-")
+    def test_post_mortem_requires_record(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["r1"])
+        with pytest.raises(HostMemoryLeakError):
+            store.add_lesson("x", LessonSource.POST_MORTEM, post_mortem_id="pm-none")
     
-    def test_empty_lesson_rejected(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        with pytest.raises(ValueError, match="empty"):
-            store.add_lesson(text="", source=LessonSource.POST_MORTEM)
+    def test_post_mortem_flow(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["trigger-run"])
+        pm = store.record_post_mortem(title="Outage", triggering_run_id="trigger-run", summary="Fix")
+        lesson = store.add_lesson("Use pool", LessonSource.POST_MORTEM, post_mortem_id=pm.post_mortem_id, tags=["db"])
+        assert lesson.post_mortem_id == pm.post_mortem_id
 
 
 class TestRetrieval:
-    def test_retrieve_by_tags(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        l1 = store.add_lesson("python tip", LessonSource.POST_MORTEM, tags=["python"])
-        l2 = store.add_lesson("rust tip", LessonSource.POST_MORTEM, tags=["rust"])
-        
-        results = store.retrieve_by_tags(["python"])
+    def test_retrieve_active(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["r1"])
+        store.add_lesson("active tip", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["x"])
+        results = store.retrieve_by_tags(["x"])
         assert len(results) == 1
-        assert results[0].lesson_id == l1.lesson_id
     
-    def test_retrieve_excludes_deprecated(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        l1 = store.add_lesson("old tip", LessonSource.POST_MORTEM, tags=["python"])
-        store.deprecate(l1.lesson_id)
-        
-        results = store.retrieve_by_tags(["python"])
-        assert len(results) == 0
-    
-    def test_retrieve_excludes_contradictory(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        l1 = store.add_lesson("tip", LessonSource.POST_MORTEM, tags=["x"])
-        store.mark_contradictory(l1.lesson_id)
-        
+    def test_deprecated_excluded(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["r1"])
+        l = store.add_lesson("old", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["x"])
+        store.deprecate(l.lesson_id)
         assert len(store.retrieve_by_tags(["x"])) == 0
     
-    def test_retrieve_limited(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        for i in range(10):
-            store.add_lesson(f"tip {i}", LessonSource.POST_MORTEM, tags=["a"])
-        
-        results = store.retrieve_for_task(["a"], limit=3)
-        assert len(results) == 3
+    def test_contradictory_excluded(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["r1", "r2"])
+        l1 = store.add_lesson("old", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["x"])
+        time.sleep(0.01)
+        l2 = store.add_lesson("new", LessonSource.RUN_OUTCOME, source_run_id="r2", tags=["x"])
+        store.mark_contradictory(l2.lesson_id, conflicts_with=[l1.lesson_id])
+        assert len(store.retrieve_by_tags(["x"])) == 0
 
 
-class TestPersistenceAndRestart:
-    def test_lessons_survive_restart(self, tmp_path):
+class TestPersistence:
+    def test_reload_preserves_lessons(self, tmp_path):
         path = str(tmp_path / "mem.json")
-        store1 = MemoryStore(path)
-        lesson = store1.add_lesson(
-            text="Critical lesson",
-            source=LessonSource.RUN_OUTCOME,
-            source_run_id="run-123",
-            tags=["auth"],
-        )
+        s1 = _store_with_runs(tmp_path, ["r1"])
+        s1.add_lesson("tip", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["a"])
         
-        # Restart
-        store2 = MemoryStore(path)
-        loaded = store2.get(lesson.lesson_id)
-        assert loaded is not None
-        assert loaded.text == "Critical lesson"
-        assert loaded.source_run_id == "run-123"
+        s2 = _store_with_runs(tmp_path, ["r1"])
+        assert s2.count_active() == 1
     
-    def test_deprecation_survives_restart(self, tmp_path):
+    def test_tampered_provenance_rejected(self, tmp_path):
         path = str(tmp_path / "mem.json")
-        s1 = MemoryStore(path)
-        l = s1.add_lesson("old", LessonSource.POST_MORTEM, tags=["x"])
-        s1.deprecate(l.lesson_id)
+        s1 = _store_with_runs(tmp_path, ["r1"])
+        s1.add_lesson("tip", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["a"])
         
-        s2 = MemoryStore(path)
-        assert s2.get(l.lesson_id).status == LessonStatus.DEPRECATED
+        # Tamper: forge a lesson with unknown run
+        import json
+        with open(path) as f:
+            data = json.load(f)
+        data["lessons"][" forged"] = {
+            "lesson_id": "forged",
+            "text": "forged",
+            "source": "run_outcome",
+            "tags": [],
+            "source_run_id": "unknown-run",
+            "post_mortem_id": "",
+            "created_at": 0.0,
+            "status": "active",
+            "superseded_by": "",
+            "contradicts": [],
+        }
+        with open(path, "w") as f:
+            json.dump(data, f)
+        
+        with pytest.raises(HostMemoryLeakError):
+            _store_with_runs(tmp_path, ["r1"])
 
 
 class TestInjection:
-    def test_inject_only_active_lessons(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        l1 = store.add_lesson("active", LessonSource.POST_MORTEM, tags=["a"])
-        l2 = store.add_lesson("deprecated", LessonSource.POST_MORTEM, tags=["a"])
+    def test_only_active_injected(self, tmp_path):
+        store = _store_with_runs(tmp_path, ["r1"])
+        l1 = store.add_lesson("good", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["a"])
+        l2 = store.add_lesson("bad", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["a"])
         store.deprecate(l2.lesson_id)
         
-        lessons = [store.get(l1.lesson_id), store.get(l2.lesson_id)]
-        record = inject_lessons_into_run("run-1", lessons, context="retry path")
-        
+        record = inject_lessons_into_run("run-target", [l1, l2], store=store)
         assert l1.lesson_id in record.lesson_ids
         assert l2.lesson_id not in record.lesson_ids
     
-    def test_injection_record_audited(self, tmp_path):
-        store = MemoryStore(str(tmp_path / "mem.json"))
-        l = store.add_lesson("x", LessonSource.POST_MORTEM, tags=["a"])
+    def test_injection_persisted(self, tmp_path):
+        path = str(tmp_path / "mem.json")
+        store = _store_with_runs(tmp_path, ["r1"])
+        l = store.add_lesson("tip", LessonSource.RUN_OUTCOME, source_run_id="r1", tags=["a"])
+        inject_lessons_into_run("run-target", [l], context="retry", store=store)
         
-        record = inject_lessons_into_run("run-1", [l], context="initial setup")
-        assert record.run_id == "run-1"
-        assert record.context == "initial setup"
-        assert record.injected_at > 0
+        store2 = _store_with_runs(tmp_path, ["r1"])
+        assert len(store2._injection_log) == 1

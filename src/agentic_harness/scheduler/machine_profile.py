@@ -63,7 +63,8 @@ def detect_machine_profile() -> MachineProfile:
         vm = psutil.virtual_memory()
         total_memory_gb = vm.total / (1024 ** 3)
         available_memory_gb = vm.available / (1024 ** 3)
-    except ImportError:
+    except Exception:
+        # Catch ANY failure (not just ImportError) and fall back
         # Fallback: sysctl on macOS, /proc/meminfo on Linux
         try:
             if plat.system() == "Darwin":
@@ -84,10 +85,22 @@ def detect_machine_profile() -> MachineProfile:
         except Exception:
             pass
     
-    # Conservative fallback if nothing worked
+    # Sanity checks: reject impossible values
+    source = "live"
     if total_memory_gb <= 0:
         total_memory_gb = 4.0
         available_memory_gb = 1.0
+        source = "fallback"
+    if available_memory_gb < 0:
+        available_memory_gb = 0.0
+        source = "fallback"
+    if available_memory_gb > total_memory_gb:
+        # Impossible — fall back
+        available_memory_gb = total_memory_gb * 0.5
+        source = "fallback"
+    if cpu_count < 1:
+        cpu_count = 1
+        source = "fallback"
     
     # Disk
     try:
@@ -102,7 +115,7 @@ def detect_machine_profile() -> MachineProfile:
         available_memory_gb=round(available_memory_gb, 2),
         disk_free_gb=round(disk_free_gb, 2),
         platform=plat.system(),
-        source="live",
+        source=source,
     )
 
 
