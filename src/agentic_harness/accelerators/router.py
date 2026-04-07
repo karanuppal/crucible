@@ -123,6 +123,7 @@ class Router:
                 self._failovers[-1].to_backend = backend_id
             
             self._attempted.add((spec.spec_id, backend_id))
+            self._save()  # persist before any work
             adapter = self._adapters[backend_id]
             
             try:
@@ -135,6 +136,7 @@ class Router:
                     to_backend=backend_id,
                     reason=f"spawn failed: {e}",
                 ))
+                self._save()
                 last_backend = backend_id
                 continue
             
@@ -160,6 +162,7 @@ class Router:
                 reason=f"run status: {result.status.value}",
                 artifacts_preserved=list(result.artifact_paths),
             ))
+            self._save()  # persist failover immediately
             
             last_result = result
             last_backend = backend_id

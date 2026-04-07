@@ -69,23 +69,36 @@ class BackendCapabilityMatrix:
         self,
         backend_id: str,
         observed_capabilities: set[Capability],
+        *,
+        required_capabilities: set[Capability] | None = None,
     ) -> None:
         """Raise CapabilityMismatchError if observed behavior contradicts declarations.
         
-        Specifically: a backend cannot CLAIM a capability it didn't actually
-        demonstrate. (Inverse: it CAN demonstrate fewer than declared, but
-        cannot demonstrate MORE than declared without re-registration.)
+        Two-way check:
+        - Backend cannot demonstrate UNDECLARED capabilities (security)
+        - Backend cannot CLAIM a required capability it didn't demonstrate (overclaim)
+        
+        If required_capabilities is provided, every required capability must be
+        in observed_capabilities, otherwise the backend over-claimed.
         """
         caps = self._backends.get(backend_id)
         if caps is None:
             raise CapabilityMismatchError(f"Unknown backend: {backend_id}")
         
-        # Backend cannot demonstrate undeclared capabilities (security)
+        # Undeclared (under-claim attack)
         undeclared = observed_capabilities - caps.supports
         if undeclared:
             raise CapabilityMismatchError(
                 f"Backend {backend_id} demonstrated undeclared capabilities: {sorted(undeclared)}"
             )
+        
+        # Over-claim: required capabilities must actually have been delivered
+        if required_capabilities is not None:
+            promised_but_missing = (caps.supports & required_capabilities) - observed_capabilities
+            if promised_but_missing:
+                raise CapabilityMismatchError(
+                    f"Backend {backend_id} declared but did not deliver: {sorted(promised_but_missing)}"
+                )
     
     def to_dict(self) -> dict[str, Any]:
         return {
