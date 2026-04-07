@@ -30,8 +30,9 @@ class RunRecord:
     started_at: float
     finished_at: float
     artifact_ids: list[str] = field(default_factory=list)
-    # Map artifact_id -> content_hash (authoritative binding)
-    artifact_hashes: dict[str, str] = field(default_factory=dict)
+    # Map artifact_id -> full fingerprint (authoritative binding)
+    # Fingerprint includes: content_hash, path, type, immutable
+    artifact_fingerprints: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class RunRegistry:
@@ -80,7 +81,15 @@ class RunRegistry:
             started_at=started_at,
             finished_at=finished_at,
             artifact_ids=[a.artifact_id for a in arts],
-            artifact_hashes={a.artifact_id: a.content_hash for a in arts},
+            artifact_fingerprints={
+                a.artifact_id: {
+                    "content_hash": a.content_hash,
+                    "path": a.path,
+                    "type": a.type.value,
+                    "immutable": a.immutable,
+                }
+                for a in arts
+            },
         )
         self._records[run_id] = record
         if self._path:
@@ -113,10 +122,19 @@ class RunRegistry:
             return False
         if artifact.artifact_id not in record.artifact_ids:
             return False
-        # Hash binding: the submitted artifact must have the exact hash
-        # recorded when the run was registered
-        recorded_hash = record.artifact_hashes.get(artifact.artifact_id)
-        if recorded_hash is None or recorded_hash != artifact.content_hash:
+        # Full fingerprint binding: content_hash + path + type + immutable
+        # must all match the values recorded at run time.
+        # This closes same-ID + same-hash substitution with changed metadata.
+        recorded_fp = record.artifact_fingerprints.get(artifact.artifact_id)
+        if recorded_fp is None:
+            return False
+        if recorded_fp["content_hash"] != artifact.content_hash:
+            return False
+        if recorded_fp["path"] != artifact.path:
+            return False
+        if recorded_fp["type"] != artifact.type.value:
+            return False
+        if recorded_fp["immutable"] != artifact.immutable:
             return False
         # Integrity: file on disk must still match its hash
         if not artifact.verify_integrity():
@@ -134,7 +152,9 @@ class RunRegistry:
                 "started_at": r.started_at,
                 "finished_at": r.finished_at,
                 "artifact_ids": list(r.artifact_ids),
-                "artifact_hashes": dict(r.artifact_hashes),
+                "artifact_fingerprints": {
+                    k: dict(v) for k, v in r.artifact_fingerprints.items()
+                },
             }
             for rid, r in self._records.items()
         }

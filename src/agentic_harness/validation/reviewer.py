@@ -161,6 +161,23 @@ def validate_reviewer_input(raw: dict[str, Any]) -> None:
                 _strict_allowlist_check(
                     ar, ALLOWED_ARTIFACT_REF_KEYS, path=f"artifact_refs[{i}]"
                 )
+                # Type-check values: all scalar fields must be scalars,
+                # not nested dicts/lists that could smuggle builder framing
+                _SCALAR_ARTIFACT_FIELDS = {
+                    "artifact_id": str,
+                    "type": str,
+                    "path": str,
+                    "content_hash": str,
+                    "producer_run_id": str,
+                    "created_at": (int, float),
+                    "immutable": bool,
+                }
+                for key, expected_type in _SCALAR_ARTIFACT_FIELDS.items():
+                    if key in ar and not isinstance(ar[key], expected_type):
+                        raise ValueError(
+                            f"Reviewer input at artifact_refs[{i}].{key} must be "
+                            f"{expected_type}, got {type(ar[key]).__name__}"
+                        )
     # diffs must be a plain string — reject dict/list payloads
     if "diffs" in raw and not isinstance(raw["diffs"], str):
         raise ValueError(
