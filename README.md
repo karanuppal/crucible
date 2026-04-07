@@ -66,6 +66,7 @@ src/crucible/
 - `docs/agentic-harness-spec-v5.2.md`
 - `docs/crucible-spec-v5.3.md`
 - `docs/crucible-spec-v5.4.md`
+- `docs/architecture.md`
 
 ### Plans / implementation history
 - `EXECUTION_PLAN.md`
