@@ -124,22 +124,33 @@ class FanInIntegrator:
                     capture_output=True, text=True, env=env,
                 )
                 if merge_result.returncode != 0:
-                    # Conflict — collect and abort this merge
+                    # Merge failed — either conflicts OR a hard error (missing branch etc.)
                     conflict_files = self._get_conflict_files()
-                    for cf in conflict_files:
-                        # Use overlap map to attribute ALL tasks touching this file
-                        attributed = list(overlap_map.get(cf, [output.task_id]))
-                        if output.task_id not in attributed:
-                            attributed.append(output.task_id)
-                        conflicts.append(IntegrationConflict(
-                            file_path=cf,
-                            conflicting_task_ids=attributed,
-                            description=merge_result.stderr[:200],
-                        ))
-                    subprocess.run(
-                        ["git", "-C", self._main_repo, "merge", "--abort"],
-                        capture_output=True, text=True, env=env,
-                    )
+                    if conflict_files:
+                        # Normal conflict case — collect and abort
+                        for cf in conflict_files:
+                            attributed = list(overlap_map.get(cf, [output.task_id]))
+                            if output.task_id not in attributed:
+                                attributed.append(output.task_id)
+                            conflicts.append(IntegrationConflict(
+                                file_path=cf,
+                                conflicting_task_ids=attributed,
+                                description=merge_result.stderr[:200],
+                            ))
+                        subprocess.run(
+                            ["git", "-C", self._main_repo, "merge", "--abort"],
+                            capture_output=True, text=True, env=env,
+                        )
+                    else:
+                        # Hard failure (missing branch, git error, etc.) — fail closed
+                        return IntegrationResult(
+                            status=IntegrationStatus.FAILED,
+                            merged_branch=integration_branch,
+                            error=(
+                                f"Merge of {output.branch_name} failed with "
+                                f"no conflict files: {merge_result.stderr[:300]}"
+                            ),
+                        )
                 else:
                     integrated_paths.extend(output.artifact_paths)
                     already_merged_tasks.append(output.task_id)

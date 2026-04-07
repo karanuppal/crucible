@@ -323,6 +323,8 @@ class Orchestrator:
         return self._state
     
     def _failed_task(self, task_id: str, reason: str) -> None:
+        if task_id in self._state.failed_tasks:
+            return  # already recorded — don't double-count
         self._state.failed_tasks.append(task_id)
         # Classify failure and feed circuit breaker
         classification = classify_failure(FailureClass.VALIDATION_FAILURE, description=reason)

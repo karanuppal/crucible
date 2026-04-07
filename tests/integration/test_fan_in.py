@@ -101,6 +101,23 @@ class TestFanInIntegration:
         assert result.status == IntegrationStatus.PENDING
 
 
+class TestHardFailure:
+    def test_nonexistent_branch_fails_closed(self, tmp_path):
+        """Merging a missing branch must NOT silently report INTEGRATED."""
+        repo = _init_repo(tmp_path)
+        integrator = FanInIntegrator(repo)
+        outputs = [
+            SubAgentOutput(
+                task_id="t1", run_id="r1", worktree_path=repo,
+                branch_name="nonexistent/branch", artifact_paths=["x.py"],
+            ),
+        ]
+        result = integrator.integrate(outputs)
+        assert result.status == IntegrationStatus.FAILED
+        assert result.error
+        assert "nonexistent/branch" in result.error
+
+
 class TestErrors:
     def test_missing_repo_raises(self):
         with pytest.raises(IntegrationError):
