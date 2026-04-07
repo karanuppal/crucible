@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.ambiguity.gate import (
+from crucible.ambiguity.gate import (
     AmbiguityOutcome, AmbiguityCategory, AmbiguityFinding,
     classify_ambiguity,
 )
@@ -54,6 +54,6 @@ class TestDeferOutcome:
         assert AmbiguityOutcome.DEFER.value == "DEFER"
 
     def test_defer_result_not_safe(self):
-        from agentic_harness.ambiguity.gate import AmbiguityResult
+        from crucible.ambiguity.gate import AmbiguityResult
         result = AmbiguityResult(outcome=AmbiguityOutcome.DEFER, rationale="Needs more info")
         assert not result.is_safe_to_proceed()

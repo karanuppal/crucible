@@ -1,41 +1,79 @@
-# Agentic Harness v5.2
+# Crucible
 
-**Status:** In Progress  
-**Primary Spec:** `docs/agentic-harness-spec-v5.2.md`
+**Status:** Foundation + Integration complete (Phases 1–7)
+**Spec heritage:** Agentic Harness v5.2 (`docs/agentic-harness-spec-v5.2.md`)
 
-General harness architecture for turning chat-native delegation into reliable, long-running software execution. First implementation surface is OpenClaw.
+> Where work is forged and tested under pressure.
+
+Crucible is a harness architecture that turns chat-native delegation into reliable, long-running software execution. It owns the deterministic substrate, sub-agent lifecycle, validation trust anchors, scheduling, harness memory, project workflows, and integration glue that any chat-driven AI surface (e.g. OpenClaw) can plug into.
+
+## Status
+
+- ✅ All 7 phases shipped, signed off, merged to `main`
+- ✅ 364 tests passing
+- ✅ Trust-boundary hardened across multiple adversarial review rounds per phase
+- 🔌 Backend adapters and chat/control layer come from the embedding surface (not built into Crucible)
+
+## Architecture
+
+```
+src/crucible/
+├── state/         # Phase 1: state contracts (Project/Build/Task/Run/Validation/Integration)
+├── ledger/        # Phase 1: append-only event ledger
+├── ambiguity/     # Phase 1: ambiguity gate
+├── failures/      # Phase 1: failure taxonomy
+├── runner/        # Phase 2: run graph, circuit breaker, spawn controller
+├── validation/    # Phase 3: validator, criteria, ladder, reviewer, anti-vacuity, RunRegistry
+├── scheduler/     # Phase 4: machine profile, intensity, scheduler
+├── memory/        # Phase 4: harness-owned lessons with provenance
+├── workflows/     # Phase 5: intake, worktree, greenfield, first-working-version
+├── accelerators/  # Phase 6: backend capabilities, adapters, router
+├── orchestrator/  # Phase 7: top-level harness loop
+└── integration/   # Phase 7: fan-in integration
+```
 
 ## Quick Links
 
-- [Merged Spec v5.2](./docs/agentic-harness-spec-v5.2.md) — Main product + architecture specification
-- [Execution Plan](./EXECUTION_PLAN.md) — Phased implementation breakdown
-- [Source PRD v5.2](./docs/agentic-harness-prd-v5.2.md) — Original product requirements source
-- [Source Technical Design v5.2](./docs/agentic-harness-technical-design-v5.2.md) — Original architecture source
+- [Merged Spec v5.2](./docs/agentic-harness-spec-v5.2.md)
+- [Execution Plan](./EXECUTION_PLAN.md)
+- [Final Holistic Review](./docs/validation/final-review.md)
+- [Phase Signoffs](./docs/validation/) — `phase-{1..7}/signoff.md`
 
-## Implementation Phases
+## Phase Summary
 
-- Phase 1 — Deterministic substrate (state, ledger, ambiguity, failures)
-- Phase 2 — Sub-agent management cluster (run graph, roles, spawn)
-- Phase 3 — Unified project workflows (intake, bootstrap, greenfield)
-- Phase 4 — Validation and review (ladder, verification, completion)
-- Phase 5 — Scheduling and memory (machine profile, harness memory)
-- Phase 6 — Optional accelerators (backend interface, Claude Code)
+| Phase | Module | Tests | Reviewer Rounds |
+|-------|--------|-------|-----------------|
+| 1 | Deterministic substrate | 85 | 1 |
+| 2 | Sub-agent management | 45 | 1 |
+| 3 | Validation & review foundation | 97 | 9 |
+| 4 | Scheduling & memory | ~50 | 3 |
+| 5 | Unified workflows | 39 | 7 |
+| 6 | Optional accelerators | 23 | 2 |
+| 7 | Orchestrator + integration | 19 | 3 |
+| **Total** | | **364** | **26** |
 
-## Core Principles
+## Usage
 
-1. Sub-agents are the default execution unit
-2. Deterministic where possible, evidence-backed everywhere else
-3. Spec clarity before implementation
-4. Validation is part of the product, not after-the-fact
-5. Long-run autonomy is first-class
+```python
+from crucible.orchestrator.orchestrator import Orchestrator, TaskDefinition
+from crucible.accelerators.router import Router
 
-## User Promise
+orchestrator = Orchestrator(
+    project_id="proj-1",
+    build_id="build-1",
+    ledger_path="./ledger.jsonl",
+    memory_path="./memory.json",
+    registry_path="./registry.json",
+    router=router,  # bring your own backend adapters
+)
 
-> A user should be able to send a concise description of a software project from their phone, and the system should autonomously build a functional, validated implementation with minimal back-and-forth.
+state = orchestrator.run_build(spec_text, tasks)
+# state.current_phase == OrchestratorPhase.DONE on success
+```
 
-## Getting Started
+## Tests
 
-Start with the merged spec:
-- [docs/agentic-harness-spec-v5.2.md](./docs/agentic-harness-spec-v5.2.md)
-
-The PRD and technical design remain in the repo as source documents, but the merged spec is now the main reference for collaborators and implementation work.
+```bash
+uv sync --all-extras --dev
+uv run pytest tests/
+```

@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.runner.run_graph import (
+from crucible.runner.run_graph import (
     RunGraph, RunStatus, RunRole,
 )
 

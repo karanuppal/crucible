@@ -1,4 +1,4 @@
-# Agentic Harness v5.2 — Execution Plan v3
+# Crucible (formerly Agentic Harness v5.2) — Execution Plan v3
 
 **Status:** In Progress  
 **Date:** 2026-04-06  
@@ -9,7 +9,7 @@
 
 ## Overview
 
-This execution plan breaks the Agentic Harness v5.2 implementation into 6 phases with explicit build scope, validation matrices, reviewer roles, signoff packets, and fail conditions.
+This execution plan breaks the Crucible (formerly Agentic Harness v5.2) implementation into 6 phases with explicit build scope, validation matrices, reviewer roles, signoff packets, and fail conditions.
 
 The key shift in v3 is this:
 - a phase is not done because the builder says it works

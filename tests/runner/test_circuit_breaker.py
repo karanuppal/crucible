@@ -3,7 +3,7 @@
 import pytest
 import time
 
-from agentic_harness.runner.circuit_breaker import CircuitBreaker, RejectionEntry
+from crucible.runner.circuit_breaker import CircuitBreaker, RejectionEntry
 
 
 class TestCircuitBreakerTrip:

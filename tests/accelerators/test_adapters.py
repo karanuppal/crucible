@@ -2,10 +2,10 @@
 
 import pytest
 
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilities, Capability,
 )
-from agentic_harness.accelerators.adapters import (
+from crucible.accelerators.adapters import (
     InMemoryAdapter, AdapterRunSpec, AdapterStatus,
 )
 

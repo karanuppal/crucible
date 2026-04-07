@@ -17,11 +17,11 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable
 
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionResult, CriterionVerdict,
 )
-from agentic_harness.validation.ladder import LadderRung, next_rung
-from agentic_harness.validation.validator import Validator, ValidationVerdict, TaskCompletionStatus
+from crucible.validation.ladder import LadderRung, next_rung
+from crucible.validation.validator import Validator, ValidationVerdict, TaskCompletionStatus
 
 
 @dataclass

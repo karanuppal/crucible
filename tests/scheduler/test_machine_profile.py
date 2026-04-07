@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.scheduler.machine_profile import (
+from crucible.scheduler.machine_profile import (
     MachineProfile, detect_machine_profile, fallback_profile,
 )
 

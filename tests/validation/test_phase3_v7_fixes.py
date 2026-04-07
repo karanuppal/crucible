@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.validation.reviewer import ReviewerInput
+from crucible.validation.reviewer import ReviewerInput
 
 
 def _valid_triple():

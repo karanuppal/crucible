@@ -19,10 +19,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilityMatrix, Capability,
 )
-from agentic_harness.accelerators.adapters import (
+from crucible.accelerators.adapters import (
     BackendAdapter, AdapterRunSpec, AdapterRunHandle, AdapterRunResult, AdapterStatus,
 )
 

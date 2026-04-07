@@ -3,7 +3,7 @@
 import os
 import pytest
 
-from agentic_harness.workflows.greenfield import (
+from crucible.workflows.greenfield import (
     BootstrapConfig, BootstrapState, ProjectType,
     bootstrap_greenfield, load_bootstrap_state, BootstrapError,
     ALL_STEPS,
@@ -60,7 +60,7 @@ class TestResume:
 
 class TestGitHubFieldsPersistence:
     def test_github_fields_roundtrip(self, tmp_path):
-        from agentic_harness.workflows.greenfield import BootstrapState
+        from crucible.workflows.greenfield import BootstrapState
         config = BootstrapConfig(
             project_name="proj",
             project_type=ProjectType.PYTHON_LIB,

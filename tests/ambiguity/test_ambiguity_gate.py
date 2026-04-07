@@ -9,7 +9,7 @@ Validation matrix requirements:
 
 import pytest
 
-from agentic_harness.ambiguity.gate import (
+from crucible.ambiguity.gate import (
     AmbiguityOutcome, AmbiguityCategory, AmbiguityFinding,
     AmbiguityResult, classify_ambiguity,
 )

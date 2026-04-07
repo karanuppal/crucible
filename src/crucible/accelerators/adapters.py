@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from agentic_harness.accelerators.capabilities import Capability, BackendCapabilities
+from crucible.accelerators.capabilities import Capability, BackendCapabilities
 
 
 class AdapterStatus(str, Enum):

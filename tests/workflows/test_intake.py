@@ -3,7 +3,7 @@
 import os
 import pytest
 
-from agentic_harness.workflows.intake import (
+from crucible.workflows.intake import (
     IntakeReport, inspect_repo, Confidence,
 )
 

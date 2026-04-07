@@ -5,12 +5,12 @@ import shutil
 import subprocess
 import pytest
 
-from agentic_harness.workflows.intake import inspect_repo, Confidence
-from agentic_harness.workflows.worktree import WorktreeManager
-from agentic_harness.workflows.greenfield import (
+from crucible.workflows.intake import inspect_repo, Confidence
+from crucible.workflows.worktree import WorktreeManager
+from crucible.workflows.greenfield import (
     BootstrapConfig, ProjectType, bootstrap_greenfield, load_bootstrap_state,
 )
-from agentic_harness.workflows.first_working_version import check_first_working_version
+from crucible.workflows.first_working_version import check_first_working_version
 
 
 # ─────────────────────────────────────────────────────────────────

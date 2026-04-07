@@ -1,5 +1,5 @@
 [project]
-name = "agentic-harness"
+name = "crucible"
 version = "0.1.0"
 description = "General harness architecture for chat-native delegation into reliable, long-running software execution."
 readme = "README.md"

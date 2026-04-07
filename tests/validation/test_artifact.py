@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.validation.artifact import (
+from crucible.validation.artifact import (
     ArtifactRef, ArtifactType, compute_file_hash, create_artifact_ref,
 )
 

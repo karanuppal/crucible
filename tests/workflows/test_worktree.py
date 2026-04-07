@@ -4,7 +4,7 @@ import os
 import subprocess
 import pytest
 
-from agentic_harness.workflows.worktree import WorktreeManager, WorktreeError
+from crucible.workflows.worktree import WorktreeManager, WorktreeError
 
 
 def _init_repo(tmp_path):

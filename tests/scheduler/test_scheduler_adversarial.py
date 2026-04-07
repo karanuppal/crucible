@@ -4,10 +4,10 @@ import pytest
 import sys
 import types
 
-from agentic_harness.scheduler.machine_profile import (
+from crucible.scheduler.machine_profile import (
     MachineProfile, detect_machine_profile, fallback_profile,
 )
-from agentic_harness.scheduler.intensity import (
+from crucible.scheduler.intensity import (
     Intensity, classify_intensity,
 )
 

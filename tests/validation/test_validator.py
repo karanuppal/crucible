@@ -2,13 +2,13 @@
 
 import pytest
 
-from agentic_harness.validation.artifact import (
+from crucible.validation.artifact import (
     ArtifactRef, ArtifactType, create_artifact_ref,
 )
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict, VerificationTriple,
 )
-from agentic_harness.validation.validator import (
+from crucible.validation.validator import (
     Validator, TaskCompletionStatus,
 )
 

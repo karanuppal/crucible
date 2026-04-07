@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.scheduler.intensity import (
+from crucible.scheduler.intensity import (
     Intensity, classify_intensity, IntensityClassification,
 )
 

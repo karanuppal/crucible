@@ -17,29 +17,29 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from agentic_harness.state.models import (
+from crucible.state.models import (
     ProjectState, BuildState, TaskState, ProjectMode,
 )
-from agentic_harness.ledger.ledger import Ledger, EventType
-from agentic_harness.ambiguity.gate import (
+from crucible.ledger.ledger import Ledger, EventType
+from crucible.ambiguity.gate import (
     classify_ambiguity, AmbiguityFinding, AmbiguityOutcome,
 )
-from agentic_harness.failures.taxonomy import FailureClass, classify_failure
-from agentic_harness.runner.run_graph import RunGraph, RunRole, RunStatus
-from agentic_harness.runner.spawn_controller import SpawnController, SpawnConfig, SpawnResult
-from agentic_harness.runner.circuit_breaker import CircuitBreaker
-from agentic_harness.scheduler.machine_profile import detect_machine_profile, MachineProfile
-from agentic_harness.scheduler.scheduler import Scheduler
-from agentic_harness.scheduler.intensity import classify_intensity, IntensityClassification, Intensity
-from agentic_harness.memory.memory_store import MemoryStore, LessonSource
-from agentic_harness.validation.validator import Validator, TaskCompletionStatus
-from agentic_harness.validation.criterion import Criterion, CriterionResult, CriterionVerdict
-from agentic_harness.validation.run_registry import RunRegistry
-from agentic_harness.accelerators.router import Router
-from agentic_harness.accelerators.adapters import (
+from crucible.failures.taxonomy import FailureClass, classify_failure
+from crucible.runner.run_graph import RunGraph, RunRole, RunStatus
+from crucible.runner.spawn_controller import SpawnController, SpawnConfig, SpawnResult
+from crucible.runner.circuit_breaker import CircuitBreaker
+from crucible.scheduler.machine_profile import detect_machine_profile, MachineProfile
+from crucible.scheduler.scheduler import Scheduler
+from crucible.scheduler.intensity import classify_intensity, IntensityClassification, Intensity
+from crucible.memory.memory_store import MemoryStore, LessonSource
+from crucible.validation.validator import Validator, TaskCompletionStatus
+from crucible.validation.criterion import Criterion, CriterionResult, CriterionVerdict
+from crucible.validation.run_registry import RunRegistry
+from crucible.accelerators.router import Router
+from crucible.accelerators.adapters import (
     BackendAdapter, AdapterRunSpec, AdapterStatus,
 )
-from agentic_harness.accelerators.capabilities import Capability
+from crucible.accelerators.capabilities import Capability
 
 
 class OrchestratorPhase(str, Enum):
@@ -273,7 +273,7 @@ class Orchestrator:
         # Phase: Integration — invoke fan-in if integrator is available
         self._state.current_phase = OrchestratorPhase.INTEGRATE
         if self._integrator is not None and self._state.completed_tasks:
-            from agentic_harness.integration.fan_in import SubAgentOutput
+            from crucible.integration.fan_in import SubAgentOutput
             outputs = []
             for task_id in self._state.completed_tasks:
                 run_result = run_results.get(task_id)
@@ -357,12 +357,12 @@ class Orchestrator:
         import os
         import tempfile
         import time
-        from agentic_harness.validation.artifact import (
+        from crucible.validation.artifact import (
             ArtifactRef, ArtifactType, create_artifact_ref,
         )
         
         results = []
-        scratch = os.path.join(tempfile.gettempdir(), "agentic_harness_evidence", run_result.handle_id or "anon")
+        scratch = os.path.join(tempfile.gettempdir(), "crucible_evidence", run_result.handle_id or "anon")
         os.makedirs(scratch, exist_ok=True)
         
         for c in task_def.criteria:

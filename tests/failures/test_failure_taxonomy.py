@@ -9,7 +9,7 @@ Validation matrix requirements:
 
 import pytest
 
-from agentic_harness.failures.taxonomy import (
+from crucible.failures.taxonomy import (
     FailureClass, NextAction, classify_failure, get_next_action,
     consumes_retry_budget, FailureClassification,
 )

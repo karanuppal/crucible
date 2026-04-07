@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from agentic_harness.ledger.ledger import Ledger, LedgerEvent, EventType
+from crucible.ledger.ledger import Ledger, LedgerEvent, EventType
 
 
 @pytest.fixture

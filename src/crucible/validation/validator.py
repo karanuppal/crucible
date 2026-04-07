@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict,
 )
-from agentic_harness.validation.run_registry import RunRegistry
+from crucible.validation.run_registry import RunRegistry
 
 
 class TaskCompletionStatus(str, Enum):

@@ -2,9 +2,9 @@
 
 import pytest
 
-from agentic_harness.scheduler.machine_profile import MachineProfile
-from agentic_harness.scheduler.intensity import Intensity, IntensityClassification
-from agentic_harness.scheduler.scheduler import Scheduler, TaskEntry
+from crucible.scheduler.machine_profile import MachineProfile
+from crucible.scheduler.intensity import Intensity, IntensityClassification
+from crucible.scheduler.scheduler import Scheduler, TaskEntry
 
 
 def _test_profile(cpus=8, mem_gb=16.0):

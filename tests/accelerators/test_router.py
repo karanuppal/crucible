@@ -3,13 +3,13 @@
 import pytest
 import time
 
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilities, BackendCapabilityMatrix, Capability,
 )
-from agentic_harness.accelerators.adapters import (
+from crucible.accelerators.adapters import (
     InMemoryAdapter, AdapterRunSpec, AdapterStatus,
 )
-from agentic_harness.accelerators.router import (
+from crucible.accelerators.router import (
     Router, FailoverEvent, BackendUnavailableError,
 )
 

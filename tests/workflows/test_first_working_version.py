@@ -3,7 +3,7 @@
 import os
 import pytest
 
-from agentic_harness.workflows.first_working_version import (
+from crucible.workflows.first_working_version import (
     check_first_working_version, FirstWorkingVersionResult,
     FirstWorkingVersionError,
 )

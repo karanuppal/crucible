@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from agentic_harness.ledger.ledger import Ledger, EventType
+from crucible.ledger.ledger import Ledger, EventType
 
 
 class TestLedgerForgeryDetection:

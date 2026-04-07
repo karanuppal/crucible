@@ -3,7 +3,7 @@
 import pytest
 import time
 
-from agentic_harness.memory.memory_store import (
+from crucible.memory.memory_store import (
     MemoryStore, LessonSource, LessonStatus, HostMemoryLeakError,
     inject_lessons_into_run,
 )

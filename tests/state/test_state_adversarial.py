@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from agentic_harness.state.models import (
+from crucible.state.models import (
     ValidationState, RunState, serialize, deserialize,
 )
 

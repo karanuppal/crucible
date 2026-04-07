@@ -13,8 +13,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
 
-from agentic_harness.scheduler.machine_profile import MachineProfile
-from agentic_harness.scheduler.intensity import Intensity, IntensityClassification
+from crucible.scheduler.machine_profile import MachineProfile
+from crucible.scheduler.intensity import Intensity, IntensityClassification
 
 
 @dataclass

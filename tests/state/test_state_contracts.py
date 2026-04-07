@@ -11,7 +11,7 @@ Validation matrix requirements:
 import json
 import pytest
 
-from agentic_harness.state.models import (
+from crucible.state.models import (
     ProjectState, BuildState, TaskState, RunState, ValidationState, IntegrationState,
     ProjectMode, TaskSize, TaskStatus, RunStatus, RunRole, ValidationVerdict,
     IntegrationStatus, CleanupStatus, VerificationTriple, CriterionResult, GateResult,

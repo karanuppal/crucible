@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.validation.reviewer import (
+from crucible.validation.reviewer import (
     ReviewerInput, ReviewerReport, ReviewerVerdict,
     validate_reviewer_input, FORBIDDEN_REVIEWER_INPUT_KEYS,
 )

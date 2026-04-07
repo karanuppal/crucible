@@ -4,14 +4,14 @@ import os
 import json
 import pytest
 
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilities, BackendCapabilityMatrix, Capability,
     CapabilityMismatchError,
 )
-from agentic_harness.accelerators.adapters import (
+from crucible.accelerators.adapters import (
     InMemoryAdapter, AdapterRunSpec, AdapterStatus,
 )
-from agentic_harness.accelerators.router import Router
+from crucible.accelerators.router import Router
 
 
 # ─────────────────────────────────────────────────────────────────

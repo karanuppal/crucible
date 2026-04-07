@@ -1,7 +1,7 @@
 """Phase 3 v8 fix: criterion_results strict schema closure."""
 
 import pytest
-from agentic_harness.validation.reviewer import ReviewerInput
+from crucible.validation.reviewer import ReviewerInput
 
 
 def _base(cr_list):

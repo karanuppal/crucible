@@ -11,13 +11,13 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
-from agentic_harness.validation.artifact import ArtifactRef, ArtifactType
-from agentic_harness.validation.criterion import (
+from crucible.validation.artifact import ArtifactRef, ArtifactType
+from crucible.validation.criterion import (
     Criterion, CriterionResult, CriterionVerdict, VerificationTriple, CriterionClass,
 )
-from agentic_harness.validation.validator import ValidationVerdict, TaskCompletionStatus
-from agentic_harness.validation.ladder import LadderRung
-from agentic_harness.validation.reviewer import ReviewerReport, ReviewerVerdict
+from crucible.validation.validator import ValidationVerdict, TaskCompletionStatus
+from crucible.validation.ladder import LadderRung
+from crucible.validation.reviewer import ReviewerReport, ReviewerVerdict
 
 
 @dataclass

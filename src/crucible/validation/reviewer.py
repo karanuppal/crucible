@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
 
-from agentic_harness.validation.artifact import ArtifactRef
+from crucible.validation.artifact import ArtifactRef
 
 
 class ReviewerVerdict(str, Enum):

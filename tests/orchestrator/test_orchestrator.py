@@ -2,23 +2,23 @@
 
 import pytest
 
-from agentic_harness.orchestrator.orchestrator import (
+from crucible.orchestrator.orchestrator import (
     Orchestrator, OrchestratorPhase, TaskDefinition,
 )
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, VerificationTriple,
 )
-from agentic_harness.runner.run_graph import RunRole
-from agentic_harness.ambiguity.gate import (
+from crucible.runner.run_graph import RunRole
+from crucible.ambiguity.gate import (
     AmbiguityFinding, AmbiguityCategory,
 )
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilities, BackendCapabilityMatrix, Capability,
 )
-from agentic_harness.accelerators.adapters import (
+from crucible.accelerators.adapters import (
     InMemoryAdapter, AdapterStatus,
 )
-from agentic_harness.accelerators.router import Router
+from crucible.accelerators.router import Router
 
 
 def _make_router(outcome=AdapterStatus.COMPLETE):
@@ -133,12 +133,12 @@ class TestLedgerEvents:
         orch.run_build("spec", [_make_task()])
         
         # Check ledger has events
-        from agentic_harness.ledger.ledger import Ledger
+        from crucible.ledger.ledger import Ledger
         ledger = Ledger(str(tmp_path / "ledger.jsonl"))
         assert ledger.count > 0
     
     def test_task_created_events_emitted(self, tmp_path):
-        from agentic_harness.ledger.ledger import EventType, Ledger
+        from crucible.ledger.ledger import EventType, Ledger
         
         orch = _make_orchestrator(tmp_path)
         orch.run_build("spec", [_make_task("t1"), _make_task("t2")])

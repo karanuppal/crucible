@@ -4,9 +4,9 @@ import json
 import pytest
 import time
 
-from agentic_harness.runner.run_graph import RunGraph, RunStatus, RunRole
-from agentic_harness.runner.circuit_breaker import CircuitBreaker
-from agentic_harness.runner.spawn_controller import (
+from crucible.runner.run_graph import RunGraph, RunStatus, RunRole
+from crucible.runner.circuit_breaker import CircuitBreaker
+from crucible.runner.spawn_controller import (
     SpawnController, SpawnConfig, SpawnResult,
 )
 

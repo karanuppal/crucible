@@ -2,16 +2,16 @@
 
 import pytest
 
-from agentic_harness.validation.artifact import (
+from crucible.validation.artifact import (
     ArtifactRef, ArtifactType, create_artifact_ref,
 )
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict, VerificationTriple,
 )
-from agentic_harness.validation.validator import Validator, TaskCompletionStatus
-from agentic_harness.validation.reviewer import ReviewerInput, ReviewerReport, ReviewerVerdict
-from agentic_harness.validation.persistence import ValidationStateRecord
-from agentic_harness.validation.ladder import LadderRung
+from crucible.validation.validator import Validator, TaskCompletionStatus
+from crucible.validation.reviewer import ReviewerInput, ReviewerReport, ReviewerVerdict
+from crucible.validation.persistence import ValidationStateRecord
+from crucible.validation.ladder import LadderRung
 
 
 def _mk_triple(cmd="pytest tests/test_foo.py"):

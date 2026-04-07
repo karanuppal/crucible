@@ -4,7 +4,7 @@ import os
 import subprocess
 import pytest
 
-from agentic_harness.integration.fan_in import (
+from crucible.integration.fan_in import (
     FanInIntegrator, SubAgentOutput, IntegrationStatus, IntegrationError,
 )
 

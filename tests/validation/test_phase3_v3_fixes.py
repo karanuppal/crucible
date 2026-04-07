@@ -4,17 +4,17 @@ import json
 import time
 import pytest
 
-from agentic_harness.validation.artifact import (
+from crucible.validation.artifact import (
     ArtifactRef, ArtifactType, create_artifact_ref,
 )
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict, VerificationTriple,
 )
-from agentic_harness.validation.validator import Validator, TaskCompletionStatus
-from agentic_harness.validation.run_registry import RunRegistry
-from agentic_harness.validation.reviewer import ReviewerInput
-from agentic_harness.validation.ladder import LadderRung
-from agentic_harness.validation.ladder_executor import (
+from crucible.validation.validator import Validator, TaskCompletionStatus
+from crucible.validation.run_registry import RunRegistry
+from crucible.validation.reviewer import ReviewerInput
+from crucible.validation.ladder import LadderRung
+from crucible.validation.ladder_executor import (
     LadderExecutor, LadderExecutionState, save_ladder_state, load_ladder_state,
 )
 

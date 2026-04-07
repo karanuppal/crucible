@@ -2,8 +2,8 @@
 
 import pytest
 
-from agentic_harness.validation.anti_vacuity import check_vacuity
-from agentic_harness.validation.criterion import (
+from crucible.validation.anti_vacuity import check_vacuity
+from crucible.validation.criterion import (
     Criterion, CriterionClass, VerificationTriple,
 )
 

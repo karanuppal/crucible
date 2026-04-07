@@ -3,10 +3,10 @@
 import pytest
 import time
 
-from agentic_harness.runner.spawn_controller import (
+from crucible.runner.spawn_controller import (
     SpawnController, SpawnConfig, SpawnResult, ROLE_TEMPLATES,
 )
-from agentic_harness.runner.run_graph import RunGraph, RunRole, RunStatus
+from crucible.runner.run_graph import RunGraph, RunRole, RunStatus
 
 
 class TestRoleTemplates:

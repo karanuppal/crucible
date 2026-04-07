@@ -3,15 +3,15 @@
 import time
 import pytest
 
-from agentic_harness.validation.artifact import (
+from crucible.validation.artifact import (
     ArtifactRef, ArtifactType, create_artifact_ref,
 )
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionClass, CriterionResult, CriterionVerdict, VerificationTriple,
 )
-from agentic_harness.validation.validator import Validator, TaskCompletionStatus
-from agentic_harness.validation.run_registry import RunRegistry
-from agentic_harness.validation.reviewer import ReviewerInput
+from crucible.validation.validator import Validator, TaskCompletionStatus
+from crucible.validation.run_registry import RunRegistry
+from crucible.validation.reviewer import ReviewerInput
 
 
 def _mk_criterion(cmd="pytest tests/foo.py"):
@@ -133,7 +133,7 @@ class TestRegistryHashBinding:
         # Attack: fake artifact B with same artifact_id but different content
         p_bad = tmp_path / "bad.log"
         p_bad.write_text("FAKE CONTENT")
-        from agentic_harness.validation.artifact import compute_file_hash
+        from crucible.validation.artifact import compute_file_hash
         art_b = ArtifactRef(
             artifact_id=art_a.artifact_id,  # collision
             type=ArtifactType.LOG,

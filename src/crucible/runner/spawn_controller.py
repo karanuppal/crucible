@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from agentic_harness.runner.run_graph import RunGraph, RunStatus, RunRole
+from crucible.runner.run_graph import RunGraph, RunStatus, RunRole
 
 
 # Role-specific configuration templates

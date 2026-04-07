@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.validation.ladder import (
+from crucible.validation.ladder import (
     LadderRung, next_rung, required_rung_for_task_size,
 )
 

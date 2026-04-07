@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentic_harness.accelerators.capabilities import (
+from crucible.accelerators.capabilities import (
     BackendCapabilities, BackendCapabilityMatrix, Capability,
     CapabilityMismatchError,
 )

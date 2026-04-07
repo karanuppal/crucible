@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable
 
-from agentic_harness.validation.criterion import (
+from crucible.validation.criterion import (
     Criterion, CriterionResult, CriterionVerdict, VerificationTriple,
 )
 
