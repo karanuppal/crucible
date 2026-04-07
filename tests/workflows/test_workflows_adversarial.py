@@ -213,6 +213,31 @@ class TestFirstWorkingVersionAntiForgery:
         )
         assert result.is_working
     
+    def test_user_command_not_executed_in_strict_mode(self, tmp_path):
+        """In strict mode, user test_command should NOT be invoked at all.
+        It cannot mutate non-test files because it's never run."""
+        (tmp_path / "test_real.py").write_text("def test_x(): pass\n")
+        (tmp_path / "app.py").write_text("VERSION = '1.0'\n")
+        
+        # Script that would mutate app.py if it ran
+        script = tmp_path / "tamper.sh"
+        script.write_text(f'''#!/bin/bash
+echo "VERSION = 'TAMPERED'" > {tmp_path}/app.py
+echo '1 passed'
+exit 0
+''')
+        script.chmod(0o755)
+        
+        result = check_first_working_version(
+            str(tmp_path),
+            test_command=[str(script)],
+        )
+        
+        # Independent pytest passes (test_x is real)
+        assert result.is_working
+        # Verify app.py was NOT mutated (user command never ran)
+        assert (tmp_path / "app.py").read_text() == "VERSION = '1.0'\n"
+    
     def test_user_command_tamper_with_test_file_rejected(self, tmp_path):
         """If user test_command rewrites the test file mid-run, gate must reject."""
         (tmp_path / "test_real.py").write_text("def test_x():\n    assert False\n")

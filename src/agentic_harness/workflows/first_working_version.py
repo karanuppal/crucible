@@ -75,15 +75,20 @@ def check_first_working_version(
     # ─────────────────────────────────────────────────────────────
     
     if require_real_tests:
-        pre_hashes = _hash_test_files(project_dir)
+        # Strict mode: independent pytest is the ONLY trust anchor.
+        # User-supplied test_command is NOT executed (it could mutate project state).
+        # Hash ALL project files before/after for tamper detection on the verifier itself.
+        pre_hashes = _hash_all_project_files(project_dir)
         independent_passed, independent_total = _run_independent_pytest(project_dir)
-        post_hashes = _hash_test_files(project_dir)
+        post_hashes = _hash_all_project_files(project_dir)
         
-        if pre_hashes != post_hashes:
+        # Detect any mutation outside .harness/proof
+        mutated = _diff_hashes_excluding(pre_hashes, post_hashes, exclude_prefix=os.path.join(project_dir, ".harness"))
+        if mutated:
             return FirstWorkingVersionResult(
                 is_working=False,
                 proof_artifact_path="",
-                error="Test files mutated during independent pytest run (tamper detected)",
+                error=f"Project files mutated during pytest run (tamper detected): {sorted(mutated)[:5]}",
             )
         
         if independent_total == 0 or independent_passed == 0:
@@ -95,32 +100,10 @@ def check_first_working_version(
                 error=f"Independent pytest: {independent_passed}/{independent_total} passed",
             )
         
-        # Now run the user command for logging (proof artifact)
-        try:
-            result = subprocess.run(
-                test_command, cwd=project_dir,
-                capture_output=True, text=True, timeout=300,
-            )
-            user_output = result.stdout + "\n" + result.stderr
-            user_exit = result.returncode
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            user_output = f"USER COMMAND ERROR: {e}"
-            user_exit = -1
-        
-        # Verify files STILL unchanged after user command
-        final_hashes = _hash_test_files(project_dir)
-        if pre_hashes != final_hashes:
-            return FirstWorkingVersionResult(
-                is_working=False,
-                proof_artifact_path="",
-                error="Test files mutated by user test_command (tamper detected)",
-            )
-        
         with open(proof_path, "w") as f:
             f.write(f"INDEPENDENT_PYTEST: {independent_passed}/{independent_total} passed\n")
-            f.write(f"USER_COMMAND: {' '.join(test_command)}\n")
-            f.write(f"USER_EXIT: {user_exit}\n")
-            f.write(f"USER_OUTPUT:\n{user_output}\n")
+            f.write(f"NOTE: user test_command not executed in strict mode (anti-tamper)\n")
+            f.write(f"FILE_HASH_COUNT: {len(pre_hashes)}\n")
         
         return FirstWorkingVersionResult(
             is_working=True,
@@ -198,6 +181,48 @@ def _hash_test_files(project_dir: str) -> dict[str, str]:
         except OSError:
             continue
     return hashes
+
+
+def _hash_all_project_files(project_dir: str) -> dict[str, str]:
+    """Snapshot ALL non-hidden, non-cache project files for total tamper detection.
+    
+    Includes file type marker (file/symlink/dir) and content hash.
+    """
+    import hashlib
+    hashes: dict[str, str] = {}
+    skip_dirs = {"__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".harness"}
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in skip_dirs]
+        for f in files:
+            if f.startswith("."):
+                continue
+            full = os.path.join(root, f)
+            try:
+                if os.path.islink(full):
+                    target = os.readlink(full)
+                    hashes[full] = f"symlink:{target}"
+                else:
+                    with open(full, "rb") as fh:
+                        hashes[full] = "file:" + hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                hashes[full] = "error"
+    return hashes
+
+
+def _diff_hashes_excluding(
+    before: dict[str, str],
+    after: dict[str, str],
+    exclude_prefix: str = "",
+) -> set[str]:
+    """Return set of paths that differ between before/after, excluding given prefix."""
+    diff: set[str] = set()
+    all_keys = set(before.keys()) | set(after.keys())
+    for k in all_keys:
+        if exclude_prefix and k.startswith(exclude_prefix):
+            continue
+        if before.get(k) != after.get(k):
+            diff.add(k)
+    return diff
 
 
 def _run_independent_pytest(project_dir: str) -> tuple[int, int]:
