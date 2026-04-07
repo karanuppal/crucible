@@ -196,13 +196,24 @@ class TestResumeMode:
     def test_resume_returns_run_root(self, tmp_path):
         """Round-8 contract: resume must return run_root just like run does."""
         runs_dir = str(tmp_path / "runs")
-        run_out = execute({"mode": "run", "plan": _good_plan(), "runs_dir": runs_dir})
+        workspace_root = str(tmp_path / "workspace")
+        os.makedirs(workspace_root, exist_ok=True)
+        run_out = execute({
+            "mode": "run",
+            "plan": _good_plan(),
+            "runs_dir": runs_dir,
+            "workspace_root": workspace_root,
+            "embedding_surface": "openclaw-test",
+            "embedding_session_ref": "session-abc-123",
+        })
         run_id = run_out["run_id"]
         original_run_root = run_out["run_root"]
         
         out = execute({"mode": "resume", "run_id": run_id, "runs_dir": runs_dir})
         assert "run_root" in out, f"resume missing run_root: {out}"
         assert out["run_root"] == original_run_root
+        assert out["workspace_root"] == os.path.realpath(workspace_root)
+        assert out["embedding_session_ref"] == "session-abc-123"
     
     def test_resume_unknown_returns_error(self, tmp_path):
         out = execute({
