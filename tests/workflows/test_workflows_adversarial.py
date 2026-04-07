@@ -213,6 +213,33 @@ class TestFirstWorkingVersionAntiForgery:
         )
         assert result.is_working
     
+    def test_hidden_file_mutation_detected(self, tmp_path):
+        """Mutation of .env-style hidden files during pytest must be detected."""
+        (tmp_path / "test_x.py").write_text("def test_x(): pass\n")
+        (tmp_path / ".envfile").write_text("original\n")
+        
+        # conftest mutates the hidden file when pytest runs
+        (tmp_path / "conftest.py").write_text(
+            "import pathlib\n"
+            f"pathlib.Path(r'{tmp_path}/.envfile').write_text('tampered')\n"
+        )
+        
+        result = check_first_working_version(str(tmp_path))
+        # Hidden file mutation must be caught
+        assert not result.is_working
+    
+    def test_hidden_dir_mutation_detected(self, tmp_path):
+        (tmp_path / "test_x.py").write_text("def test_x(): pass\n")
+        (tmp_path / ".secrets").mkdir()
+        (tmp_path / ".secrets" / "key.txt").write_text("original\n")
+        
+        (tmp_path / "conftest.py").write_text(
+            f"open(r'{tmp_path}/.secrets/key.txt', 'w').write('tampered')\n"
+        )
+        
+        result = check_first_working_version(str(tmp_path))
+        assert not result.is_working
+    
     def test_user_command_not_executed_in_strict_mode(self, tmp_path):
         """In strict mode, user test_command should NOT be invoked at all.
         It cannot mutate non-test files because it's never run."""

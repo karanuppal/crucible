@@ -184,17 +184,21 @@ def _hash_test_files(project_dir: str) -> dict[str, str]:
 
 
 def _hash_all_project_files(project_dir: str) -> dict[str, str]:
-    """Snapshot ALL non-hidden, non-cache project files for total tamper detection.
+    """Snapshot ALL project files for total tamper detection.
     
-    Includes file type marker (file/symlink/dir) and content hash.
+    Includes hidden files/dirs (e.g. .env, .config). Skips only known
+    cache/build/venv/harness dirs and pyc files.
     """
     import hashlib
     hashes: dict[str, str] = {}
-    skip_dirs = {"__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".harness"}
+    skip_dirs = {
+        "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+        ".harness", ".git", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    }
     for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in skip_dirs]
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
         for f in files:
-            if f.startswith("."):
+            if f.endswith((".pyc", ".pyo")):
                 continue
             full = os.path.join(root, f)
             try:
