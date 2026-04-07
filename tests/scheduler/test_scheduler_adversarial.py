@@ -66,6 +66,8 @@ class TestWrapperVariants:
         "bash -lc 'pytest tests/'",
         "sh -c 'pytest tests/'",
         "python -c 'import pytest; pytest.main()'",
+        "zsh -lc 'pytest tests/'",
+        "fish -c 'pytest tests/'",
     ])
     def test_wrapper_variants_classified_heavy(self, cmd):
         r = classify_intensity(cmd)

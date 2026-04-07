@@ -62,8 +62,8 @@ def _normalize_command(cmd: str) -> str:
         s = _re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+", "", s)
         # `env [-i] [VAR=val ...] cmd`
         s = _re.sub(r"^env\s+(?:-\S+\s+)*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*", "", s)
-        # Shell wrappers: bash/sh -c '...' or -lc '...'
-        m = _re.match(r"""^(?:ba)?sh\s+-l?c\s+['"](.+)['"]\s*$""", s)
+        # Shell wrappers: bash/sh/zsh/fish -c '...' or -lc '...'
+        m = _re.match(r"""^(?:ba|z|fi)?sh\s+-l?c\s+['"](.+)['"]\s*$""", s)
         if m:
             s = m.group(1).strip()
         # python -c 'snippet' — extract pytest.main if present
