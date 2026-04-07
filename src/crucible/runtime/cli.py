@@ -28,6 +28,7 @@ from crucible.runtime.preflight import lint_plan, LintResult
 from crucible.runtime.run_store import (
     RunStore, RunSummary, create_run_store, load_run_store, default_runs_root,
 )
+from crucible.runtime.run_executor import execute_run
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -135,27 +136,49 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"run_root: {manifest.run_root}")
     
     if args.detach:
-        # In detached mode the orchestrator would be invoked in a background
-        # process. For Phase 8 we provide the durable surface; the actual
-        # orchestrator invocation can be wired by the embedder.
+        # Detached: caller is expected to drive the orchestrator out of band.
         if args.jsonl:
             _emit_jsonl({"event": "detached", "run_id": manifest.run_id})
         else:
             print("(detached: orchestrator invocation deferred to embedder)")
         return 0
     
-    # Foreground orchestrator invocation requires a router with backends.
-    # For the standalone CLI we just record the plan and exit; embedders
-    # construct an Orchestrator with their own router and call run_build().
+    # Foreground: invoke orchestrator with the default in-memory adapter.
+    # Embedders can override by importing execute_run() directly with their
+    # own adapter factory (e.g. an OpenClawSubagentAdapter).
+    from crucible.accelerators.adapters import InMemoryAdapter
+    from crucible.accelerators.capabilities import BackendCapabilities, Capability
+    
+    def _default_factory(s: RunStore):
+        caps = BackendCapabilities(
+            backend_id="inmemory-default",
+            supports={
+                Capability.SHELL_EXEC,
+                Capability.FILE_WRITE,
+                Capability.ARTIFACT_PRODUCTION,
+                Capability.LONG_RUNNING,
+            },
+            max_concurrent_runs=4,
+        )
+        return [InMemoryAdapter(backend_id="inmemory-default", capabilities=caps)]
+    
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=_default_factory,
+    )
+    
     if args.jsonl:
-        _emit_jsonl({
-            "event": "run_pending_orchestrator",
-            "run_id": manifest.run_id,
-            "note": "embedder must invoke Orchestrator.run_build with this run_id",
-        })
+        _emit_jsonl({"event": "run_terminal", "summary": summary.to_dict()})
     else:
-        print("(foreground: embedder invokes Orchestrator.run_build with this run)")
-    return 0
+        print(f"terminal_status: {summary.terminal_status}")
+        print(f"completed: {summary.completed_tasks}")
+        print(f"failed: {summary.failed_tasks}")
+    
+    if summary.terminal_status == "complete":
+        return 0
+    return 3
 
 
 def cmd_status(args: argparse.Namespace) -> int:
