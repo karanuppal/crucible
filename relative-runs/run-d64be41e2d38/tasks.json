@@ -1,0 +1,24 @@
+{
+  "spec": "r7 probe",
+  "project_id": "r7",
+  "build_id": "b1",
+  "tasks": [
+    {
+      "task_id": "t1",
+      "description": "d",
+      "role": "builder",
+      "intensity_hint": "S",
+      "criteria": [
+        {
+          "criterion_id": "c1",
+          "criterion_class": "must_pass",
+          "triple": {
+            "verification_command": "echo OK",
+            "expected_output": "OK",
+            "build_target": "non-path-target"
+          }
+        }
+      ]
+    }
+  ]
+}

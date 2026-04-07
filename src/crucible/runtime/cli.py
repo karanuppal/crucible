@@ -375,8 +375,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
         workspace_root = manifest.workspace_root
     else:
         # No manifest pin → require explicit override (round-4 rule)
-        workspace_root = cli_override or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
-        if not workspace_root:
+        env_override = os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        raw_override = cli_override or env_override
+        if not raw_override:
             sys.stderr.write(
                 f"run {args.run_id} was created without workspace_root and no "
                 f"--workspace-root override was provided. Refusing to resume in "
@@ -384,8 +385,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
             )
             store.release_lock()
             return 1
-        # Persist the override into the manifest so future resumes are pinned
-        workspace_root = os.path.abspath(workspace_root)
+        # Round-7 fix: canonicalize via the SAME helper as everywhere else
+        # so the manifest, the executor, and the events all see the
+        # identical path string (no symlink-vs-realpath drift).
+        workspace_root = _canonicalize_workspace(raw_override)
         manifest.workspace_root = workspace_root
         store.write_manifest(manifest)
     

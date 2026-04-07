@@ -1,0 +1,16 @@
+{
+  "run_id": "run-d64be41e2d38",
+  "project_id": "p",
+  "build_id": "b",
+  "run_root": "relative-runs/run-d64be41e2d38",
+  "created_at": 1775537537.2442272,
+  "spec_text_hash": "2d711642b726b044",
+  "task_definitions_hash": "6b3621b540444f17",
+  "current_phase": "intake",
+  "current_status": "running",
+  "cli_version": "0.1.0",
+  "embedding_surface": "",
+  "embedding_session_ref": "",
+  "ledger_ref": "",
+  "workspace_root": "/private/var/folders/6v/x_mfxysn6cxcxkcx_b37ndv00000gn/T/crucible-r7-g4j0wfrw/cwd4/ws"
+}

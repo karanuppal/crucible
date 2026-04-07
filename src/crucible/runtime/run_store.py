@@ -184,7 +184,13 @@ CRUCIBLE_CLI_VERSION = "0.1.0"
 
 
 def default_runs_root() -> str:
-    return os.environ.get("CRUCIBLE_RUNS_DIR", os.path.join(os.getcwd(), "runs"))
+    """Return the absolute path to the default runs directory.
+    
+    Round-7 fix: always return an absolute path so manifest.run_root is
+    never relative regardless of how the env var or default was set.
+    """
+    raw = os.environ.get("CRUCIBLE_RUNS_DIR", os.path.join(os.getcwd(), "runs"))
+    return os.path.abspath(raw)
 
 
 def new_run_id() -> str:
@@ -565,6 +571,9 @@ def create_run_store(
         run_id = new_run_id()
     if runs_root is None:
         runs_root = default_runs_root()
+    # Round-7 fix: always store an absolute run_root in the manifest so
+    # downstream code never has to guess what cwd was at create time.
+    runs_root = os.path.abspath(runs_root)
     run_root = os.path.join(runs_root, run_id)
     store = RunStore(run_root)
     manifest = RunManifest(
@@ -592,6 +601,7 @@ def create_run_store(
 def load_run_store(run_id: str, runs_root: str | None = None) -> RunStore | None:
     if runs_root is None:
         runs_root = default_runs_root()
+    runs_root = os.path.abspath(runs_root)
     run_root = os.path.join(runs_root, run_id)
     if not os.path.isdir(run_root):
         return None
