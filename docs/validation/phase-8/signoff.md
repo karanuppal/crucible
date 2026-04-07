@@ -30,9 +30,10 @@ This rework addresses all three. The validation plan that drove the rework is at
 
 ## Test results
 
-- **539 tests passing**, 0 failures
+- **541 tests passing**, 0 failures
 - Rework gates covered by targeted runtime packs plus a green full-suite run (`uv run pytest`)
-- Round-9 reviewer verdict: **READY WITH CONDITIONS** (`openclaw-readiness-review-r9.md`)
+- Final global go/no-go reviewer confirmed the prior usability blocker is closed
+- Current verdict: **READY WITH CONDITIONS**
 - Adversarial pack covers: malformed JSON, vague language, no-must-pass, factory exceptions, no backends, spawn exceptions, idempotent terminal events, restart-then-resume, unknown run_id × 3 commands
 
 ## Manual smoke test
@@ -59,7 +60,7 @@ The reviewer's killer test (`verification_command: "this-command-does-not-exist-
 - **`openclaw_bridge.py`** (NEW): `SimulatedOpenClawBridge` (for tests) + `SessionsSpawnBridge` (production shim — embedder supplies spawn + wait callables, Crucible owns the rest)
 - **`run_executor.py`** (REWRITTEN): executes each criterion's verification triple via the adapter, aggregates honestly. Does NOT delegate evidence collection to the orchestrator anymore.
 - **`cli.py`**: default adapter is now `LocalShellAdapter`. `--detach` actually spawns a background process. `resume` actually re-executes.
-- **`openclaw_tool.py`**: syntax error fixed, covered by import test
+- **`openclaw_tool.py`**: syntax error fixed, covered by import test; wrapper now supports bridge-backed `run` / `resume` via injected `adapter_factory` or OpenClaw bridge callables
 - **`test_imports.py`** (NEW): G1 — every module under `crucible/runtime/` must import or CI fails
 - **`test_validation_truth.py`** (NEW): G2 — proves the harness can't be tricked by lying verification commands
 - **`test_local_shell_adapter.py`** (NEW): G3
@@ -78,7 +79,8 @@ This separation is what makes signoff trustworthy. A build can use whatever mode
 
 ## Known limitations
 
-- The default `LocalShellAdapter` does not itself produce artifacts. To use Crucible end-to-end with a real build agent, embedders must drive the build via the OpenClaw bridge before/alongside the verification step. The skill (`skills/openclaw/SKILL.md`) needs to be updated to reflect this — TODO before final signoff.
+- The default `LocalShellAdapter` still does not itself produce artifacts. Full OpenClaw-backed execution depends on the embedder providing bridge/backend callables (or an `adapter_factory`) to the wrapper path.
+- `detach` still routes through the CLI resume path rather than the new bridge-aware wrapper path.
 - Multi-host distributed run store still deferred to Phase 9+.
 
 ## Remaining conditions (non-blocking)

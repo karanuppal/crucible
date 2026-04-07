@@ -4,6 +4,9 @@ import json
 import os
 import pytest
 
+from crucible.runtime.preflight import lint_plan
+from crucible.runtime.run_store import create_run_store
+
 from crucible.runtime.openclaw_tool import execute, TOOL_SCHEMA
 
 
@@ -193,6 +196,77 @@ class TestResumeMode:
         assert out["status"] == "ok"
         assert out["terminal_status"] == "complete"
     
+    def test_run_can_use_openclaw_bridge_backend(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        spawn_calls: list[str] = []
+        wait_calls: list[str] = []
+
+        def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
+            spawn_calls.append(spec_id)
+            return f"oc-session-{spec_id}"
+
+        def fake_wait(session_id, timeout):
+            wait_calls.append(session_id)
+            return {
+                "status": "complete",
+                "artifact_paths": ["src/built.py"],
+                "summary": "bridge path complete",
+            }
+
+        out = execute({
+            "mode": "run",
+            "plan": _good_plan(),
+            "runs_dir": runs_dir,
+            "openclaw_spawn_callable": fake_spawn,
+            "openclaw_wait_callable": fake_wait,
+        })
+
+        assert out["status"] == "ok", f"got {out}"
+        assert out["terminal_status"] == "complete"
+        assert spawn_calls == ["t1.c1"]
+        assert wait_calls == ["oc-session-t1.c1"]
+
+        adapter_log = open(os.path.join(out["run_root"], "adapter.log")).read()
+        assert "openclaw-bridge" in adapter_log or "openclaw-subagent" in adapter_log
+
+    def test_resume_can_use_openclaw_bridge_backend(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        normalized = lint_plan(_good_plan()).normalized_plan or _good_plan()
+        store, manifest = create_run_store(
+            run_id=None,
+            project_id=normalized["project_id"],
+            build_id=normalized["build_id"],
+            spec_text=normalized.get("spec", ""),
+            task_plan=normalized,
+            runs_root=runs_dir,
+            workspace_root=str(tmp_path / "workspace"),
+        )
+
+        spawn_calls: list[str] = []
+        wait_calls: list[str] = []
+
+        def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
+            spawn_calls.append(spec_id)
+            return f"oc-session-{spec_id}"
+
+        def fake_wait(session_id, timeout):
+            wait_calls.append(session_id)
+            return {"status": "complete", "summary": "resume via bridge"}
+
+        out = execute({
+            "mode": "resume",
+            "run_id": manifest.run_id,
+            "runs_dir": runs_dir,
+            "openclaw_spawn_callable": fake_spawn,
+            "openclaw_wait_callable": fake_wait,
+        })
+
+        assert out["status"] == "ok", f"got {out}"
+        assert out["terminal_status"] == "complete"
+        assert spawn_calls == ["t1.c1"]
+        assert wait_calls == ["oc-session-t1.c1"]
+        assert out["run_root"] == manifest.run_root
+
     def test_resume_returns_run_root(self, tmp_path):
         """Round-8 contract: resume must return run_root just like run does."""
         runs_dir = str(tmp_path / "runs")

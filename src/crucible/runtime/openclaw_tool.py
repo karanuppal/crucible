@@ -35,7 +35,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 
 TOOL_NAME = "crucible"
@@ -111,6 +111,38 @@ def _exit_to_status(exit_code: int) -> str:
     }.get(exit_code, "error")
 
 
+def _resolve_workspace_root(input_json: dict[str, Any]) -> str:
+    from crucible.runtime.run_store import _canonicalize_workspace
+    return _canonicalize_workspace(
+        input_json.get("workspace_root")
+        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        or os.getcwd()
+    )
+
+
+def _resolve_adapter_factory(input_json: dict[str, Any]) -> Callable[[Any], list[Any]] | None:
+    factory = input_json.get("adapter_factory")
+    if callable(factory):
+        return factory
+
+    spawn_callable = input_json.get("openclaw_spawn_callable")
+    wait_callable = input_json.get("openclaw_wait_callable")
+    if callable(spawn_callable) and callable(wait_callable):
+        from crucible.runtime.openclaw_bridge import SessionsSpawnBridge, BridgeBackedAdapter
+
+        def _factory(store):
+            bridge = SessionsSpawnBridge(
+                store,
+                spawn_callable=spawn_callable,
+                wait_callable=wait_callable,
+            )
+            return [BridgeBackedAdapter(bridge)]
+
+        return _factory
+
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────
 # Per-mode handlers
 # ─────────────────────────────────────────────────────────────────
@@ -150,6 +182,54 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
     plan = input_json.get("plan")
     if not isinstance(plan, dict):
         return {"status": "error", "exit_code": 1, "message": "plan dict required for run mode"}
+
+    adapter_factory = _resolve_adapter_factory(input_json)
+    if adapter_factory is not None and not input_json.get("detach"):
+        from crucible.runtime.preflight import lint_plan
+        from crucible.runtime.run_executor import execute_run
+        from crucible.runtime.run_store import create_run_store, default_runs_root
+
+        lint = lint_plan(plan)
+        if not lint.valid:
+            return {
+                "status": "lint_failed",
+                "exit_code": 2,
+                "findings": lint.to_dict().get("findings", []),
+            }
+
+        normalized = lint.normalized_plan or plan
+        workspace_root = _resolve_workspace_root(input_json)
+        store, manifest = create_run_store(
+            run_id=None,
+            project_id=normalized["project_id"],
+            build_id=normalized["build_id"],
+            spec_text=normalized.get("spec", ""),
+            task_plan=normalized,
+            embedding_surface=str(input_json.get("embedding_surface") or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", "")),
+            embedding_session_ref=str(input_json.get("embedding_session_ref") or os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", "")),
+            runs_root=runs_dir or default_runs_root(),
+            workspace_root=workspace_root,
+        )
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=normalized,
+            adapter_factory=adapter_factory,
+            workspace_root=workspace_root,
+        )
+        out = {
+            "status": "ok" if summary.terminal_status == "complete" else "terminal",
+            "exit_code": 0 if summary.terminal_status == "complete" else 3,
+            "run_id": manifest.run_id,
+            "run_root": manifest.run_root,
+            "terminal_status": summary.terminal_status,
+            "completed_tasks": summary.completed_tasks,
+            "failed_tasks": summary.failed_tasks,
+            "partial_tasks": summary.partial_tasks,
+            "blocked_reason": summary.blocked_reason,
+            "total_runtime_seconds": summary.total_runtime_seconds,
+        }
+        return out
     
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(plan, f)
@@ -245,6 +325,103 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
     run_id = input_json.get("run_id")
     if not run_id:
         return {"status": "error", "exit_code": 1, "message": "run_id required for resume mode"}
+
+    adapter_factory = _resolve_adapter_factory(input_json)
+    if adapter_factory is not None:
+        from crucible.runtime.run_executor import execute_run
+        from crucible.runtime.run_store import load_run_store, default_runs_root, RunLockError, _canonicalize_workspace
+
+        store = load_run_store(str(run_id), runs_root=runs_dir or default_runs_root())
+        if store is None:
+            return {"status": "error", "exit_code": 4, "run_id": run_id, "message": f"unknown run_id: {run_id}"}
+
+        manifest = store.read_manifest()
+        if manifest is None:
+            return {"status": "error", "exit_code": 5, "run_id": run_id, "message": f"manifest missing for run_id: {run_id}"}
+
+        out: dict[str, Any] = {
+            "run_id": run_id,
+            "run_root": store.run_root,
+            "workspace_root": manifest.workspace_root,
+            "embedding_session_ref": manifest.embedding_session_ref,
+        }
+
+        try:
+            store.acquire_lock()
+        except RunLockError as e:
+            out.update({"status": "error", "exit_code": 5, "message": str(e)})
+            return out
+
+        try:
+            if store.is_terminal():
+                result = store.read_result() or {}
+                out.update({
+                    "status": "ok" if result.get("terminal_status") == "complete" else "terminal",
+                    "exit_code": 0 if result.get("terminal_status") == "complete" else 3,
+                    "terminal_status": result.get("terminal_status", ""),
+                    "completed_tasks": result.get("completed_tasks", []),
+                    "failed_tasks": result.get("failed_tasks", []),
+                })
+                return out
+
+            flagged = store.reconcile_in_flight_attempts()
+            store.append_event("run_resumed", payload={"reconciled_attempts": [a.attempt_id for a in flagged]})
+            plan = store.read_tasks_snapshot()
+            if plan is None:
+                out.update({"status": "error", "exit_code": 5, "message": f"run {run_id} is missing plan"})
+                return out
+
+            cli_override = input_json.get("workspace_root")
+            cli_override = _canonicalize_workspace(cli_override) if cli_override else ""
+            if manifest.workspace_root:
+                if cli_override and cli_override != manifest.workspace_root:
+                    out.update({
+                        "status": "error",
+                        "exit_code": 1,
+                        "message": (
+                            f"--workspace-root {cli_override} does not match the run's persisted "
+                            f"workspace_root {manifest.workspace_root}. Refusing to resume to avoid "
+                            f"manifest/execution inconsistency."
+                        ),
+                    })
+                    return out
+                workspace_root = manifest.workspace_root
+            else:
+                raw_override = cli_override or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+                if not raw_override:
+                    out.update({
+                        "status": "error",
+                        "exit_code": 1,
+                        "message": (
+                            f"run {run_id} was created without workspace_root and no --workspace-root "
+                            f"override was provided. Refusing to resume in ambient cwd ({os.getcwd()})."
+                        ),
+                    })
+                    return out
+                workspace_root = _canonicalize_workspace(raw_override)
+                manifest.workspace_root = workspace_root
+                store.write_manifest(manifest)
+                out["workspace_root"] = workspace_root
+
+            summary = execute_run(
+                store=store,
+                manifest=manifest,
+                plan=plan,
+                adapter_factory=adapter_factory,
+                workspace_root=workspace_root,
+            )
+            out.update({
+                "status": "ok" if summary.terminal_status == "complete" else "terminal",
+                "exit_code": 0 if summary.terminal_status == "complete" else 3,
+                "terminal_status": summary.terminal_status,
+                "completed_tasks": summary.completed_tasks,
+                "failed_tasks": summary.failed_tasks,
+                "partial_tasks": summary.partial_tasks,
+                "blocked_reason": summary.blocked_reason,
+            })
+            return out
+        finally:
+            store.release_lock()
     
     args: list[str] = []
     if runs_dir:

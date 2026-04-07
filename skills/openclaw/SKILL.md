@@ -13,7 +13,7 @@ Crucible separates two responsibilities:
 
 In the standalone CLI, the default backend is `LocalShellAdapter` — it ONLY runs verification commands locally. It does NOT build anything. The expectation is that the build has already happened (or will happen alongside verification via a real build agent driven through the OpenClaw bridge).
 
-To wire a real build path, embedders use `crucible.runtime.openclaw_bridge.SessionsSpawnBridge` to attach OpenClaw sub-agents as a backend. See `src/crucible/runtime/openclaw_bridge.py` for the contract.
+To wire a real build path, embedders use `crucible.runtime.openclaw_bridge.SessionsSpawnBridge` to attach OpenClaw sub-agents as a backend. The OpenClaw wrapper (`src/crucible/runtime/openclaw_tool.py`) can drive this path directly when the embedder supplies bridge callables (`openclaw_spawn_callable` + `openclaw_wait_callable`) or an `adapter_factory`; otherwise it falls back to the CLI's local verification-only path. See `src/crucible/runtime/openclaw_bridge.py` for the contract.
 
 ---
 

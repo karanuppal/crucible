@@ -1,6 +1,6 @@
 # Phase 8 Validation Matrix — Production Runtime Surface
 
-**Status:** PASSING (539 tests, 0 failures)
+**Status:** PASSING (541 tests, 0 failures)
 **Date:** 2026-04-07
 **Branch:** `phase8-production-runtime`
 
@@ -13,9 +13,9 @@
 | RunStore (durable) | §26 | 14 | ✅ |
 | Preflight validator | §27 | 19 | ✅ |
 | OpenClaw sub-agent adapter | §28 | 11 | ✅ |
-| Runtime test suite (all files under `tests/runtime/`) | §25.3–§29 | **175** | ✅ |
+| Runtime test suite (all files under `tests/runtime/`) | §25.3–§29 | **177** | ✅ |
 | Broader suite (Phases 1–7 + shared modules) | | **364** | ✅ |
-| **Grand total** | | **539** | **✅** |
+| **Grand total** | | **541** | **✅** |
 
 ---
 
@@ -133,6 +133,6 @@ All expected events emitted, persisted, and replayable.
 
 - **Production caller discipline:** integrations should use an absolute `runs_dir`, or persist/derive it from `run_root`, rather than assuming `run_id` is globally discoverable across cwd changes.
 - **Distributed run store:** v5.3 specifies single-host filesystem only. Multi-host coordination is deferred.
-- **Further hardening:** add explicit wrapper tests that `resume` returns `workspace_root` and `embedding_session_ref`, not just `run_root`.
+- **Further hardening:** `detach` still uses the CLI resume path rather than the new bridge-aware wrapper path.
 
-None of these are blockers for Phase 8 sign-off. The Round-9 reviewer verdict is **READY WITH CONDITIONS**.
+None of these are blockers for Phase 8 sign-off. The final reviewer verdict remains **READY WITH CONDITIONS**.
