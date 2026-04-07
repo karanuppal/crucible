@@ -49,6 +49,7 @@ class RunManifest:
     embedding_surface: str = ""
     embedding_session_ref: str = ""
     ledger_ref: str = ""
+    workspace_root: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -448,6 +449,7 @@ def create_run_store(
     embedding_session_ref: str = "",
     runs_root: str | None = None,
     ledger_ref: str = "",
+    workspace_root: str = "",
 ) -> tuple[RunStore, RunManifest]:
     """Create a fresh run directory and return (store, manifest)."""
     if run_id is None:
@@ -470,6 +472,7 @@ def create_run_store(
         embedding_surface=embedding_surface,
         embedding_session_ref=embedding_session_ref,
         ledger_ref=ledger_ref,
+        workspace_root=workspace_root,
     )
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)

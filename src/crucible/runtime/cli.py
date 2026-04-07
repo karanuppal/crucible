@@ -113,6 +113,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     
     normalized = lint.normalized_plan or plan
     
+    # Resolve workspace_root upfront so we can persist it on the manifest
+    workspace_root = (
+        args.workspace_root
+        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        or os.getcwd()
+    )
+    workspace_root = os.path.abspath(workspace_root)
+    
     # Create run store
     runs_root = args.runs_dir or default_runs_root()
     store, manifest = create_run_store(
@@ -124,6 +132,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         embedding_surface=args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", ""),
         embedding_session_ref=os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", ""),
         runs_root=runs_root,
+        workspace_root=workspace_root,
     )
     
     if args.jsonl:
@@ -167,12 +176,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     
     def _default_factory(s: RunStore):
         return [LocalShellAdapter()]
-    
-    workspace_root = (
-        args.workspace_root
-        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
-        or os.getcwd()
-    )
     
     summary = execute_run(
         store=store,
@@ -320,11 +323,19 @@ def cmd_resume(args: argparse.Namespace) -> int:
     def _factory(s: RunStore):
         return [LocalShellAdapter()]
     
+    # Restore workspace_root from manifest (round-3 reviewer blocker fix)
+    workspace_root = (
+        manifest.workspace_root
+        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        or os.getcwd()
+    )
+    
     summary = execute_run(
         store=store,
         manifest=manifest,
         plan=plan,
         adapter_factory=_factory,
+        workspace_root=workspace_root,
     )
     
     if args.jsonl:

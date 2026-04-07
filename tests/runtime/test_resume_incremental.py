@@ -87,6 +87,84 @@ class TestResumeIncremental:
             f"resume re-executed completed task — counter is {final_count}, expected 1"
         )
     
+    def test_resume_preserves_workspace_root(self, tmp_path):
+        """Round-3 blocker: resume must use the workspace_root from the original run.
+        
+        Setup:
+          - workspace A contains src/realfile.py
+          - run is started in cwd /tmp (where realfile doesn't exist)
+            with --workspace-root pointing at A
+          - run completes successfully (target exists in A)
+          - resume from a different cwd must STILL find realfile.py via the
+            persisted workspace_root in the manifest, not via ambient cwd
+        """
+        import os
+        workspace_a = tmp_path / "workspace_a"
+        workspace_a.mkdir()
+        (workspace_a / "src").mkdir()
+        (workspace_a / "src" / "realfile.py").write_text("# real\n")
+        
+        plan = {
+            "spec": "workspace persistence test",
+            "project_id": "ws-test",
+            "build_id": "b1",
+            "tasks": [{
+                "task_id": "ws-task",
+                "description": "verify src/realfile.py with tests/test_real.py",
+                "criteria": [{
+                    "criterion_id": "c1",
+                    "criterion_class": "must_pass",
+                    "triple": {
+                        "build_target": "src/realfile.py",
+                        "verification_command": "test -f src/realfile.py && echo FILE_FOUND",
+                        "expected_output": "FILE_FOUND",
+                    },
+                }],
+                "role": "builder", "intensity_hint": "S",
+            }],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(plan))
+        runs_dir = str(tmp_path / "runs")
+        
+        # Run with explicit workspace_root pointing at workspace_a
+        # but invoke from a DIFFERENT cwd (tmp_path itself, not workspace_a)
+        r = subprocess.run(
+            CLI + ["--runs-dir", runs_dir, "run", str(plan_path),
+                   "--workspace-root", str(workspace_a)],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(tmp_path),
+        )
+        assert r.returncode == 0, f"initial run failed: {r.stdout}\n{r.stderr}"
+        
+        run_id = os.listdir(runs_dir)[0]
+        
+        # Verify manifest persisted workspace_root
+        from crucible.runtime.run_store import load_run_store
+        store = load_run_store(run_id, runs_root=runs_dir)
+        assert store is not None
+        manifest = store.read_manifest()
+        assert manifest.workspace_root == str(workspace_a)
+        
+        # Clear result so resume re-executes... but with incremental mode
+        # we need the task to NOT be in winning state. Force it by
+        # deleting the attempt file too.
+        os.unlink(store.result_path)
+        for fname in os.listdir(os.path.join(store.run_root, "attempts")):
+            os.unlink(os.path.join(store.run_root, "attempts", fname))
+        
+        # Resume from a completely different cwd (not workspace_a)
+        # If resume forgets workspace_root, the verification command will
+        # run in /tmp and fail to find src/realfile.py
+        r = subprocess.run(
+            CLI + ["--runs-dir", runs_dir, "resume", run_id],
+            capture_output=True, text=True, timeout=30,
+            cwd="/tmp",
+        )
+        assert r.returncode == 0, (
+            f"resume forgot workspace_root: {r.stdout}\n{r.stderr}"
+        )
+    
     def test_resume_runs_only_failed_tasks(self, tmp_path):
         """Two-task plan: one passes, one fails. Resume should only retry the failed one."""
         counter = tmp_path / "counter.txt"
