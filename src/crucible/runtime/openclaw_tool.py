@@ -255,7 +255,7 @@ def execute(input_json: dict[str, Any]) -> dict[str, Any]:
         return _run_cli(args)
     
     else:
-        return {"status": "error", "exit_code": 1, f"unknown mode: {mode}"}
+        return {"status": "error", "exit_code": 1, "message": f"unknown mode: {mode}"}
 
 
 # OpenClaw tool contract

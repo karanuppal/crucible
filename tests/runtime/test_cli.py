@@ -23,7 +23,7 @@ def _good_plan_json(tmp_path):
                     "criterion_class": "must_pass",
                     "triple": {
                         "build_target": "src/foo.py",
-                        "verification_command": "pytest tests/test_foo.py",
+                        "verification_command": "echo 'all PASSED here'",
                         "expected_output": "PASSED",
                         "failure_signature": "FAILED",
                     },

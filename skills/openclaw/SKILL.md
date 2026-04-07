@@ -4,6 +4,17 @@
 
 **Surface:** `crucible` command exposed to the LLM as a tool.
 
+## Mental model: build vs verify
+
+Crucible separates two responsibilities:
+
+- **Build** is whatever produces the artifacts (a coding agent like Codex / Claude Code, or an OpenClaw sub-agent running such an agent). This is out of Crucible's scope as a verifier — Crucible just trusts the artifacts exist on disk.
+- **Verify** is Crucible's job. For every criterion in the plan, Crucible executes the `verification_command` against the produced artifacts via a real shell and checks `expected_output` against the command's stdout. If the command fails or the output doesn't match, the criterion (and the task) FAIL.
+
+In the standalone CLI, the default backend is `LocalShellAdapter` — it ONLY runs verification commands locally. It does NOT build anything. The expectation is that the build has already happened (or will happen alongside verification via a real build agent driven through the OpenClaw bridge).
+
+To wire a real build path, embedders use `crucible.runtime.openclaw_bridge.SessionsSpawnBridge` to attach OpenClaw sub-agents as a backend. See `src/crucible/runtime/openclaw_bridge.py` for the contract.
+
 ---
 
 ## When to Use This Skill

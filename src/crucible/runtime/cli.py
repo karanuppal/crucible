@@ -136,31 +136,36 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"run_root: {manifest.run_root}")
     
     if args.detach:
-        # Detached: caller is expected to drive the orchestrator out of band.
+        # Detached: spawn a background process running this same CLI in
+        # foreground mode against the existing run dir via the resume path.
+        import subprocess as _sp
+        runs_root = args.runs_dir or default_runs_root()
+        env = os.environ.copy()
+        proc = _sp.Popen(
+            [sys.executable, "-m", "crucible.runtime.cli",
+             "--runs-dir", runs_root, "resume", manifest.run_id],
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
         if args.jsonl:
-            _emit_jsonl({"event": "detached", "run_id": manifest.run_id})
+            _emit_jsonl({
+                "event": "detached",
+                "run_id": manifest.run_id,
+                "pid": proc.pid,
+            })
         else:
-            print("(detached: orchestrator invocation deferred to embedder)")
+            print(f"(detached pid={proc.pid})")
         return 0
     
-    # Foreground: invoke orchestrator with the default in-memory adapter.
+    # Foreground: invoke orchestrator with the default local-shell adapter.
     # Embedders can override by importing execute_run() directly with their
-    # own adapter factory (e.g. an OpenClawSubagentAdapter).
-    from crucible.accelerators.adapters import InMemoryAdapter
-    from crucible.accelerators.capabilities import BackendCapabilities, Capability
+    # own adapter factory (e.g. one backed by SessionsSpawnBridge).
+    from crucible.runtime.local_shell_adapter import LocalShellAdapter
     
     def _default_factory(s: RunStore):
-        caps = BackendCapabilities(
-            backend_id="inmemory-default",
-            supports={
-                Capability.SHELL_EXEC,
-                Capability.FILE_WRITE,
-                Capability.ARTIFACT_PRODUCTION,
-                Capability.LONG_RUNNING,
-            },
-            max_concurrent_runs=4,
-        )
-        return [InMemoryAdapter(backend_id="inmemory-default", capabilities=caps)]
+        return [LocalShellAdapter()]
     
     summary = execute_run(
         store=store,
@@ -269,21 +274,44 @@ def cmd_resume(args: argparse.Namespace) -> int:
             print(f"already terminal: {result.get('terminal_status') if result else 'unknown'}")
         return 0 if result and result.get("terminal_status") == "complete" else 3
     
-    # Reconcile in-flight attempts
+    # Reconcile in-flight attempts and re-execute the plan from the
+    # persisted snapshot. The executor is idempotent enough for our
+    # current sync model: completed criteria stay completed; failed/missing
+    # criteria are re-attempted.
     flagged = store.reconcile_in_flight_attempts()
     store.append_event("run_resumed", payload={"reconciled_attempts": [a.attempt_id for a in flagged]})
+    
+    plan = store.read_tasks_snapshot()
+    manifest = store.read_manifest()
+    if plan is None or manifest is None:
+        sys.stderr.write(f"run {args.run_id} is missing plan or manifest\n")
+        return 5
+    
+    from crucible.runtime.local_shell_adapter import LocalShellAdapter
+    
+    def _factory(s: RunStore):
+        return [LocalShellAdapter()]
+    
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=plan,
+        adapter_factory=_factory,
+    )
     
     if args.jsonl:
         _emit_jsonl({
             "event": "resumed",
             "run_id": args.run_id,
             "reconciled": [a.attempt_id for a in flagged],
-            "note": "embedder must re-invoke Orchestrator.run_build with this run_id",
+            "summary": summary.to_dict(),
         })
     else:
-        print(f"resumed run {args.run_id}, {len(flagged)} attempts flagged for reconciliation")
-        print("(embedder invokes Orchestrator.run_build to continue execution)")
-    return 0
+        print(f"resumed run {args.run_id}")
+        print(f"reconciled {len(flagged)} in-flight attempts")
+        print(f"terminal_status: {summary.terminal_status}")
+    
+    return 0 if summary.terminal_status == "complete" else 3
 
 
 # ─────────────────────────────────────────────────────────────────

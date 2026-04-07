@@ -37,7 +37,7 @@ def _good_plan():
                         "criterion_class": "must_pass",
                         "triple": {
                             "build_target": "src/foo.py",
-                            "verification_command": "python -c 'import src.foo; print(\"OK\")'",
+                            "verification_command": "echo 'OK_FOO is here'",
                             "expected_output": "OK_FOO",
                         },
                     }
