@@ -321,6 +321,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     
     if store.is_terminal():
         result = store.read_result()
+        store.release_lock()
         if args.jsonl:
             _emit_jsonl({"event": "already_terminal", "result": result})
         else:
@@ -338,6 +339,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     manifest = store.read_manifest()
     if plan is None or manifest is None:
         sys.stderr.write(f"run {args.run_id} is missing plan or manifest\n")
+        store.release_lock()
         return 5
     
     from crucible.runtime.local_shell_adapter import LocalShellAdapter
@@ -349,19 +351,41 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # fall back to cwd if the manifest doesn't have one (e.g. older runs
     # created before workspace_root was persisted). The user must pass
     # --workspace-root on resume, or set CRUCIBLE_WORKSPACE_ROOT env var.
-    workspace_root = (
-        getattr(args, "workspace_root", None)
-        or manifest.workspace_root
-        or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
-    )
-    if not workspace_root:
-        sys.stderr.write(
-            f"run {args.run_id} was created without workspace_root and no "
-            f"--workspace-root override was provided. Refusing to resume in "
-            f"ambient cwd ({os.getcwd()}). Pass --workspace-root explicitly.\n"
-        )
-        store.release_lock()
-        return 1
+    #
+    # Round-5 fix: if manifest already has workspace_root, refuse any
+    # --workspace-root override that doesn't match. Otherwise the run
+    # record (manifest says A) becomes inconsistent with execution
+    # (events show work happened in B).
+    cli_override = getattr(args, "workspace_root", None)
+    if cli_override:
+        cli_override = os.path.abspath(cli_override)
+    
+    if manifest.workspace_root:
+        # Manifest already pinned a workspace. Override must match (or be absent).
+        if cli_override and cli_override != manifest.workspace_root:
+            sys.stderr.write(
+                f"--workspace-root {cli_override} does not match the run's "
+                f"persisted workspace_root {manifest.workspace_root}. "
+                f"Refusing to resume to avoid manifest/execution inconsistency.\n"
+            )
+            store.release_lock()
+            return 1
+        workspace_root = manifest.workspace_root
+    else:
+        # No manifest pin → require explicit override (round-4 rule)
+        workspace_root = cli_override or os.environ.get("CRUCIBLE_WORKSPACE_ROOT")
+        if not workspace_root:
+            sys.stderr.write(
+                f"run {args.run_id} was created without workspace_root and no "
+                f"--workspace-root override was provided. Refusing to resume in "
+                f"ambient cwd ({os.getcwd()}). Pass --workspace-root explicitly.\n"
+            )
+            store.release_lock()
+            return 1
+        # Persist the override into the manifest so future resumes are pinned
+        workspace_root = os.path.abspath(workspace_root)
+        manifest.workspace_root = workspace_root
+        store.write_manifest(manifest)
     
     try:
         summary = execute_run(
