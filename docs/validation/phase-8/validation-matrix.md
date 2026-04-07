@@ -13,9 +13,9 @@
 | RunStore (durable) | §26 | 14 | ✅ |
 | Preflight validator | §27 | 19 | ✅ |
 | OpenClaw sub-agent adapter | §28 | 11 | ✅ |
-| Runtime test suite (all files under `tests/runtime/`) | §25.3–§29 | **177** | ✅ |
+| Runtime test suite (all files under `tests/runtime/`) | §25.3–§29 | **178** | ✅ |
 | Broader suite (Phases 1–7 + shared modules) | | **364** | ✅ |
-| **Grand total** | | **541** | **✅** |
+| **Grand total** | | **542** | **✅** |
 
 ---
 

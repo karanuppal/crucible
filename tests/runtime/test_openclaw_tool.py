@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 import pytest
 
 from crucible.runtime.preflight import lint_plan
@@ -228,6 +229,49 @@ class TestResumeMode:
 
         adapter_log = open(os.path.join(out["run_root"], "adapter.log")).read()
         assert "openclaw-bridge" in adapter_log or "openclaw-subagent" in adapter_log
+
+    def test_detach_can_use_openclaw_bridge_backend(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        spawn_calls: list[str] = []
+        wait_calls: list[str] = []
+
+        def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
+            spawn_calls.append(spec_id)
+            return f"oc-session-{spec_id}"
+
+        def fake_wait(session_id, timeout):
+            wait_calls.append(session_id)
+            time.sleep(0.05)
+            return {
+                "status": "complete",
+                "artifact_paths": ["src/built.py"],
+                "summary": "bridge detach complete",
+            }
+
+        out = execute({
+            "mode": "run",
+            "plan": _good_plan(),
+            "runs_dir": runs_dir,
+            "detach": True,
+            "openclaw_spawn_callable": fake_spawn,
+            "openclaw_wait_callable": fake_wait,
+        })
+
+        assert out["status"] == "ok", f"got {out}"
+        assert out["exit_code"] == 0
+        assert "run_id" in out and "run_root" in out
+
+        result_path = os.path.join(out["run_root"], "result.json")
+        for _ in range(50):
+            if os.path.isfile(result_path):
+                break
+            time.sleep(0.02)
+
+        assert os.path.isfile(result_path), "detached bridge-backed run never completed"
+        result = json.loads(open(result_path).read())
+        assert result["terminal_status"] == "complete"
+        assert spawn_calls == ["t1.c1"]
+        assert wait_calls == ["oc-session-t1.c1"]
 
     def test_resume_can_use_openclaw_bridge_backend(self, tmp_path):
         runs_dir = str(tmp_path / "runs")

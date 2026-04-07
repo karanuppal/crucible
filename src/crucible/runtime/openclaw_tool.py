@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Any, Callable
 
 
@@ -184,10 +185,10 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
         return {"status": "error", "exit_code": 1, "message": "plan dict required for run mode"}
 
     adapter_factory = _resolve_adapter_factory(input_json)
-    if adapter_factory is not None and not input_json.get("detach"):
+    if adapter_factory is not None:
         from crucible.runtime.preflight import lint_plan
         from crucible.runtime.run_executor import execute_run
-        from crucible.runtime.run_store import create_run_store, default_runs_root
+        from crucible.runtime.run_store import create_run_store, default_runs_root, RunSummary
 
         lint = lint_plan(plan)
         if not lint.valid:
@@ -210,6 +211,40 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             runs_root=runs_dir or default_runs_root(),
             workspace_root=workspace_root,
         )
+
+        if input_json.get("detach"):
+            def _runner() -> None:
+                try:
+                    execute_run(
+                        store=store,
+                        manifest=manifest,
+                        plan=normalized,
+                        adapter_factory=adapter_factory,
+                        workspace_root=workspace_root,
+                    )
+                except Exception as e:
+                    store.append_event("background_run_failed", payload={"error": str(e)})
+                    store.write_result(RunSummary(
+                        run_id=manifest.run_id,
+                        terminal_status="failed",
+                        blocked_reason=f"background run failed: {e}",
+                    ))
+                    store.update_manifest_status("done", "failed")
+
+            thread = threading.Thread(
+                target=_runner,
+                name=f"crucible-detach-{manifest.run_id}",
+                daemon=True,
+            )
+            thread.start()
+            return {
+                "status": "ok",
+                "exit_code": 0,
+                "run_id": manifest.run_id,
+                "run_root": manifest.run_root,
+                "message": "detached bridge-backed run started",
+            }
+
         summary = execute_run(
             store=store,
             manifest=manifest,

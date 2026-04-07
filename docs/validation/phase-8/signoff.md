@@ -80,7 +80,7 @@ This separation is what makes signoff trustworthy. A build can use whatever mode
 ## Known limitations
 
 - The default `LocalShellAdapter` still does not itself produce artifacts. Full OpenClaw-backed execution depends on the embedder providing bridge/backend callables (or an `adapter_factory`) to the wrapper path.
-- `detach` still routes through the CLI resume path rather than the new bridge-aware wrapper path.
+- Detached bridge-backed execution now works through the wrapper path; remaining limitations are primarily path-discipline and long-term architectural polish.
 - Multi-host distributed run store still deferred to Phase 9+.
 
 ## Remaining conditions (non-blocking)
