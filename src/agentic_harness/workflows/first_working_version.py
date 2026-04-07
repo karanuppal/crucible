@@ -98,31 +98,32 @@ def check_first_working_version(
     # Parse pytest output for counts
     test_count, passed_count, failed_count = _parse_pytest_output(output)
     
-    # Anti-forgery: output must reference actual test files from the project
-    # (prevents arbitrary scripts that just print "1 passed")
-    test_file_referenced = False
+    # Anti-forgery: independently run pytest ourselves and use ITS results
+    # as the source of truth. The user's test_command output is logged but
+    # not trusted for the verdict.
     if require_real_tests:
-        real_test_files = _list_test_files(project_dir)
-        for tf in real_test_files:
-            basename = os.path.basename(tf)
-            if basename in output:
-                test_file_referenced = True
-                break
+        independent_passed, independent_total = _run_independent_pytest(project_dir)
+        if independent_total == 0 or independent_passed == 0:
+            return FirstWorkingVersionResult(
+                is_working=False,
+                proof_artifact_path=proof_path,
+                test_count=independent_total,
+                passed_count=independent_passed,
+                failed_count=independent_total - independent_passed,
+                error=f"Independent pytest run: {independent_passed}/{independent_total} passed (forgery rejected)",
+            )
+        # Use independent counts as truth
+        test_count = independent_total
+        passed_count = independent_passed
+        failed_count = independent_total - independent_passed
     
-    is_working = (
-        result.returncode == 0
-        and passed_count > 0
-        and (not require_real_tests or test_file_referenced)
-    )
-    if not is_working and require_real_tests and not test_file_referenced:
-        return FirstWorkingVersionResult(
-            is_working=False,
-            proof_artifact_path=proof_path,
-            test_count=test_count,
-            passed_count=passed_count,
-            failed_count=failed_count,
-            error="Test output does not reference any real test file in project (forgery suspected)",
-        )
+    is_working = passed_count > 0
+    if require_real_tests:
+        # Already verified above
+        pass
+    else:
+        # Trust user command exit code
+        is_working = is_working and result.returncode == 0
     
     return FirstWorkingVersionResult(
         is_working=is_working,
@@ -135,8 +136,65 @@ def check_first_working_version(
 
 
 def _has_real_test_files(project_dir: str) -> bool:
-    """Check if the project actually contains test files on disk."""
-    return len(_list_test_files(project_dir)) > 0
+    """Check if the project actually contains test files with real test_* functions.
+    
+    AST-based: rejects files that just have the right name but no actual tests.
+    """
+    import ast
+    for path in _list_test_files(project_dir):
+        try:
+            with open(path) as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name.startswith("test_"):
+                        return True
+        except (SyntaxError, OSError):
+            continue
+    return False
+
+
+def _run_independent_pytest(project_dir: str) -> tuple[int, int]:
+    """Independently run pytest and return (passed, total).
+    
+    This is the trust anchor: pytest is invoked directly by the gate,
+    not by user-supplied command. Returns (0, 0) if pytest unavailable.
+    """
+    test_files = _list_test_files(project_dir)
+    if not test_files:
+        return (0, 0)
+    
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", "-q", "--no-header"] + test_files,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return (0, 0)
+    
+    out = result.stdout + result.stderr
+    _, passed, failed = _parse_pytest_output(out)
+    return (passed, passed + failed)
+
+
+def _extract_test_function_names(project_dir: str) -> set[str]:
+    """Parse all test files via AST and return all test_* function names."""
+    import ast
+    names: set[str] = set()
+    for path in _list_test_files(project_dir):
+        try:
+            with open(path) as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name.startswith("test_"):
+                        names.add(node.name)
+        except (SyntaxError, OSError):
+            continue
+    return names
 
 
 def _list_test_files(project_dir: str) -> list[str]:

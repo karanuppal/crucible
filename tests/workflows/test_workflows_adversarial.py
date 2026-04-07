@@ -213,12 +213,12 @@ class TestFirstWorkingVersionAntiForgery:
         )
         assert result.is_working
     
-    def test_forgery_with_test_file_but_no_reference_rejected(self, tmp_path):
-        """Test file exists but output doesn't reference it → rejected."""
-        (tmp_path / "test_real.py").write_text("def test_x(): pass")
+    def test_forgery_with_failing_real_test_rejected(self, tmp_path):
+        """Even with a real test file + 'passed' output, if independent
+        pytest finds the test fails, the gate must reject."""
+        (tmp_path / "test_real.py").write_text("def test_x():\n    assert False\n")
         
         script = tmp_path / "fake.sh"
-        # Output says 1 passed but doesn't reference the actual test file
         script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
         script.chmod(0o755)
         
@@ -226,5 +226,5 @@ class TestFirstWorkingVersionAntiForgery:
             str(tmp_path),
             test_command=[str(script)],
         )
+        # Independent pytest sees the failure → rejected
         assert not result.is_working
-        assert "forgery" in result.error.lower() or "reference" in result.error.lower()
