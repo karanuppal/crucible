@@ -147,3 +147,26 @@ class WorktreeManager:
             data = json.load(f)
         for wid, r_data in data.get("worktrees", {}).items():
             self._worktrees[wid] = WorktreeRecord(**r_data)
+        # Reconcile: any "active" worktree whose path no longer exists is stale
+        self._reconcile()
+    
+    def _reconcile(self) -> None:
+        """Mark worktrees as stale if their on-disk path or git state is gone."""
+        for wid, record in self._worktrees.items():
+            if record.status != "active":
+                continue
+            if not os.path.isdir(record.path):
+                record.status = "stale"
+                continue
+            # Check git's view
+            try:
+                result = subprocess.run(
+                    ["git", "-C", self._main_repo, "worktree", "list", "--porcelain"],
+                    capture_output=True, text=True, check=True,
+                )
+                if record.path not in result.stdout:
+                    record.status = "stale"
+            except subprocess.CalledProcessError:
+                pass
+        if self._state_path:
+            self._save()

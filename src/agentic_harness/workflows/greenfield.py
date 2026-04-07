@@ -94,6 +94,44 @@ ALL_STEPS = [
 ]
 
 
+def _verify_step_artifacts(step_id: str, config: BootstrapConfig) -> bool:
+    """Verify that the artifacts for a completed step still exist on disk.
+    
+    Used for safe resume: don't skip a step if its outputs are missing.
+    """
+    pkg_name = config.project_name.replace("-", "_")
+    target = config.target_dir
+    
+    if step_id == STEP_CREATE_DIR:
+        return os.path.isdir(target)
+    if step_id == STEP_INIT_PROJECT:
+        return (
+            os.path.isfile(os.path.join(target, "pyproject.toml")) and
+            os.path.isfile(os.path.join(target, "src", pkg_name, "__init__.py")) and
+            os.path.isfile(os.path.join(target, "tests", "test_smoke.py"))
+        )
+    if step_id == STEP_WRITE_README:
+        return os.path.isfile(os.path.join(target, "README.md"))
+    if step_id == STEP_WRITE_GITIGNORE:
+        return os.path.isfile(os.path.join(target, ".gitignore"))
+    if step_id == STEP_WRITE_CI:
+        return os.path.isfile(os.path.join(target, ".github", "workflows", "ci.yml"))
+    if step_id == STEP_GIT_INIT:
+        return os.path.isdir(os.path.join(target, ".git"))
+    if step_id == STEP_GIT_INITIAL_COMMIT:
+        if not os.path.isdir(os.path.join(target, ".git")):
+            return False
+        try:
+            subprocess.run(
+                ["git", "-C", target, "rev-parse", "HEAD"],
+                check=True, capture_output=True,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    return False
+
+
 def bootstrap_greenfield(
     config: BootstrapConfig,
     state_path: str | None = None,
@@ -101,10 +139,23 @@ def bootstrap_greenfield(
 ) -> BootstrapState:
     """Bootstrap a greenfield project. Resumable: skips completed steps.
     
+    Resume safety: before skipping a completed step, the step's artifacts
+    are verified on disk. If artifacts are missing/damaged, the step is
+    re-executed (resume = repair).
+    
     On failure: persists state with failed_step set, raises BootstrapError.
     """
     if state is None:
         state = BootstrapState(config=config)
+    
+    # Drop steps from completed set whose artifacts are missing
+    valid_completed = []
+    for step in state.completed_steps:
+        if _verify_step_artifacts(step, config):
+            valid_completed.append(step)
+        # else: drop it so the step re-runs
+    state.completed_steps = valid_completed
+    state.is_complete = False  # force re-verification
     
     completed = set(state.completed_steps)
     

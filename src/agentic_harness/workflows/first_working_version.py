@@ -35,13 +35,27 @@ def check_first_working_version(
     *,
     test_command: list[str] | None = None,
     proof_dir: str | None = None,
+    require_real_tests: bool = True,
 ) -> FirstWorkingVersionResult:
     """Run the project's tests and verify at least one passes.
     
     Hard rule: scaffold-only projects MUST fail this gate.
+    
+    require_real_tests: if True (default), the project must contain at least
+    one Python test file (test_*.py or *_test.py) on disk. This blocks
+    forged "1 passed" output from arbitrary scripts.
     """
     if not os.path.isdir(project_dir):
         raise FirstWorkingVersionError(f"Project dir does not exist: {project_dir}")
+    
+    # Anti-forgery: require actual test files on disk
+    if require_real_tests:
+        if not _has_real_test_files(project_dir):
+            return FirstWorkingVersionResult(
+                is_working=False,
+                proof_artifact_path="",
+                error="No real test files found (test_*.py or *_test.py) — scaffold only or forged output",
+            )
     
     if proof_dir is None:
         proof_dir = os.path.join(project_dir, ".harness", "proof")
@@ -97,6 +111,19 @@ def check_first_working_version(
         failed_count=failed_count,
         error="" if is_working else f"Exit code {result.returncode}, {passed_count} passed",
     )
+
+
+def _has_real_test_files(project_dir: str) -> bool:
+    """Check if the project actually contains test files on disk."""
+    for root, dirs, files in os.walk(project_dir):
+        # Skip hidden dirs and venvs
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"__pycache__", "node_modules", ".venv", "venv"}]
+        for f in files:
+            if f.startswith("test_") and f.endswith(".py"):
+                return True
+            if f.endswith("_test.py"):
+                return True
+    return False
 
 
 def _parse_pytest_output(output: str) -> tuple[int, int, int]:

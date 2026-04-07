@@ -136,12 +136,12 @@ PACKAGE_MANAGER_SIGNATURES: dict[str, list[str]] = {
 
 TEST_FRAMEWORK_SIGNATURES: dict[str, dict[str, Any]] = {
     "pytest": {"files": ["pytest.ini", "conftest.py"], "in_pyproject": "pytest"},
-    "unittest": {"dirs": ["tests/"], "weak": True},
     "jest": {"files": ["jest.config.js", "jest.config.ts"], "in_package": "jest"},
     "vitest": {"files": ["vitest.config.ts", "vitest.config.js"]},
     "mocha": {"in_package": "mocha"},
-    "go test": {"go_native": True},
-    "cargo test": {"rust_native": True},
+    # NOTE: 'unittest' inference from bare 'tests/' directory removed —
+    # was a hallucination source. Tests dir alone surfaces as uncertainty,
+    # not an inferred framework.
 }
 
 CI_SIGNATURES: dict[str, str] = {
@@ -216,13 +216,6 @@ def inspect_repo(repo_path: str) -> IntakeReport:
             evidence.append(f"pyproject.toml mentions {sig['in_pyproject']}")
             confidence = Confidence.HIGH
         
-        if "dirs" in sig:
-            for d in sig["dirs"]:
-                if os.path.isdir(os.path.join(repo_path, d)):
-                    evidence.append(d)
-                    if sig.get("weak"):
-                        confidence = Confidence.LOW
-        
         if evidence:
             report.test_frameworks.append(Detection(
                 label=tf, evidence=evidence, confidence=confidence,
@@ -252,20 +245,41 @@ def inspect_repo(repo_path: str) -> IntakeReport:
 
 
 def _determine_archetype(report: IntakeReport) -> str:
-    """Classify the repo into an archetype."""
-    if not report.languages:
-        return "ambiguous"
+    """Classify the repo into an archetype.
     
-    # Strong if we have a language detection AND a package manager confirms it
+    Archetypes:
+    - clean: lang + pm + tests + ci + readme + git
+    - messy: lang detected, missing some signals
+    - broken: lang detected but conflicting/missing critical signals
+              (no PM AND no git AND no readme AND no tests)
+    - ambiguous: no language at all OR mixed signals
+    """
     has_lang = bool(report.languages)
     has_pm = bool(report.package_managers)
     has_tests = bool(report.test_frameworks)
     has_ci = report.has_ci
     
-    if has_lang and has_pm and has_tests and has_ci and report.has_readme:
+    if not has_lang:
+        return "ambiguous"
+    
+    # Multiple unrelated languages with no clear primary = ambiguous
+    if len(report.languages) >= 3:
+        return "ambiguous"
+    
+    # Clean: all the signals
+    if has_pm and has_tests and has_ci and report.has_readme and report.has_git:
         return "clean"
-    if has_lang and not has_pm and not has_tests:
-        return "messy"
-    if has_lang and (has_pm or has_tests):
-        return "messy"
-    return "broken"
+    
+    # Broken: language detected but no infra at all (no pm, no tests, no git)
+    # This is a "started but never finished" repo
+    missing_critical = sum([
+        not has_pm,
+        not has_tests,
+        not report.has_git,
+        not report.has_readme,
+    ])
+    if missing_critical >= 3:
+        return "broken"
+    
+    # Otherwise messy
+    return "messy"

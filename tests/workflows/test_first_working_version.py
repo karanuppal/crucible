@@ -10,23 +10,33 @@ from agentic_harness.workflows.first_working_version import (
 
 
 class TestGate:
-    def test_scaffold_only_fails(self, tmp_path):
-        """Empty scaffold with no real tests must fail the gate."""
-        # Just create empty dirs/files — no actual tests
-        (tmp_path / "tests").mkdir()
-        (tmp_path / "tests" / "test_empty.py").write_text("# no actual tests\n")
-        
-        # Use a fake test command that succeeds with no tests
+    def test_scaffold_only_with_no_test_files_fails(self, tmp_path):
+        """Empty scaffold with NO test files must fail (anti-forgery)."""
         result = check_first_working_version(
             str(tmp_path),
-            test_command=["echo", "no tests collected"],
+            test_command=["echo", "1 passed"],
         )
-        # No tests passed → not working
+        assert not result.is_working
+        assert "test files" in result.error.lower()
+    
+    def test_forged_output_with_no_real_tests_fails(self, tmp_path):
+        """A script printing '1 passed' without real test files must fail."""
+        script = tmp_path / "fake.sh"
+        script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
+        script.chmod(0o755)
+        
+        result = check_first_working_version(
+            str(tmp_path),
+            test_command=[str(script)],
+        )
+        # Even though command would print 1 passed, no real test files exist
         assert not result.is_working
     
-    def test_passing_tests_succeed(self, tmp_path):
-        """A directory where tests actually pass should succeed."""
-        # Use a stub command that mimics pytest output for 1 passed
+    def test_passing_tests_with_real_files_succeed(self, tmp_path):
+        """A directory with real test files where tests pass should succeed."""
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_real.py").write_text("def test_x(): pass\n")
+        
         script = tmp_path / "fake_pytest.sh"
         script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
         script.chmod(0o755)
@@ -39,6 +49,7 @@ class TestGate:
         assert result.passed_count == 1
     
     def test_failing_tests_fail_gate(self, tmp_path):
+        (tmp_path / "test_x.py").write_text("def test_x(): assert False\n")
         script = tmp_path / "fake_pytest.sh"
         script.write_text("#!/bin/bash\necho '0 passed, 2 failed in 0.01s'\nexit 1\n")
         script.chmod(0o755)
@@ -50,6 +61,7 @@ class TestGate:
         assert not result.is_working
     
     def test_proof_artifact_created(self, tmp_path):
+        (tmp_path / "test_x.py").write_text("def test_x(): pass\n")
         script = tmp_path / "fake.sh"
         script.write_text("#!/bin/bash\necho '1 passed in 0.01s'\nexit 0\n")
         script.chmod(0o755)

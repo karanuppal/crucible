@@ -26,9 +26,11 @@ testpaths = ["tests"]
 
 
 def _make_messy_repo(tmp_path):
-    """Has language signal but no tests, no PM, no CI."""
+    """Has language + git + readme + PM but no tests, no CI."""
     (tmp_path / "main.py").write_text("print('hi')")
     (tmp_path / "setup.py").write_text("from setuptools import setup")
+    (tmp_path / "requirements.txt").write_text("flask")
+    (tmp_path / "README.md").write_text("# messy")
     (tmp_path / ".git").mkdir()
     return str(tmp_path)
 
