@@ -5,7 +5,7 @@ from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacke
 def test_store_roundtrip_failure_packet(tmp_path):
     store = EvidenceStore(tmp_path)
     packet = FailureEvidencePacket(
-        failure_class=FailureClass.VALIDATION_FAILURE,
+        failure_class=FailureClass.RETRYABLE,
         attempt_id="task-1-attempt-1",
         criterion="tests::unit",
         human_summary="unit test failed",
@@ -13,7 +13,7 @@ def test_store_roundtrip_failure_packet(tmp_path):
     store.store_evidence_packet(packet)
     loaded = store.load_evidence_packet("task-1-attempt-1")
     assert loaded is not None
-    assert loaded.failure_class == FailureClass.VALIDATION_FAILURE
+    assert loaded.failure_class == FailureClass.RETRYABLE
     assert loaded.human_summary == "unit test failed"
 
 

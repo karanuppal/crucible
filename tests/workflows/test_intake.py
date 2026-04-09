@@ -49,6 +49,7 @@ class TestArchetypes:
         assert any(d.label == "python" for d in report.languages)
         assert any(d.label == "uv" for d in report.package_managers)
         assert any(d.label == "pytest" for d in report.test_frameworks)
+        assert any(d.label in {"setuptools", "hatchling", "poetry"} for d in report.build_systems)
         assert report.has_ci
     
     def test_messy_repo_classified(self, tmp_path):

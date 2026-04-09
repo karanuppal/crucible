@@ -1,4 +1,4 @@
-"""Deterministic next-action selector for Crucible v5.4."""
+"""Deterministic next-action selector for Crucible v6.1."""
 
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ class NextAction(str, Enum):
     COMPLETE = "complete"
     SPLIT = "split"
     ESCALATE = "escalate"
-    ENVIRONMENT_FIX = "environment_fix"
-    ARCHITECTURE_PROPOSAL = "architecture_proposal"
 
 
 @dataclass
@@ -38,18 +36,15 @@ class NextActionDecision:
     rule_fired: str = ""
     rejected_alternatives: list[str] = field(default_factory=list)
     inputs_considered: dict[str, Any] = field(default_factory=dict)
+    budget_key: str | None = None
 
 
 class NextActionSelector:
     _ACTION_MATRIX = {
-        FailureClass.AMBIGUITY_BLOCK: (NextAction.AWAITING_USER, None, False, True),
-        FailureClass.ENVIRONMENT_BLOCK: (NextAction.ENVIRONMENT_FIX, AttemptType.BUILD, False, False),
-        FailureClass.MISSING_DEPENDENCY: (NextAction.AWAITING_USER, None, False, True),
-        FailureClass.ARCHITECTURE_MISMATCH: (NextAction.BLOCKED, None, True, False),
-        FailureClass.MODEL_LIMITATION: (NextAction.REPAIR, AttemptType.REPAIR, True, False),
-        FailureClass.VALIDATION_FAILURE: (NextAction.REPAIR, AttemptType.REPAIR, True, False),
-        FailureClass.INTEGRATION_CONFLICT: (NextAction.INTEGRATE, AttemptType.INTEGRATE, True, False),
-        FailureClass.LOOP_DETECTED: (NextAction.DEBUG, AttemptType.DEBUG, True, False),
+        FailureClass.RETRYABLE: (NextAction.REPAIR, AttemptType.REPAIR, True, False, "repair_attempt_budget"),
+        FailureClass.NEEDS_USER_INPUT: (NextAction.AWAITING_USER, None, False, True, None),
+        FailureClass.STUCK_OR_REPEATING: (NextAction.DEBUG, AttemptType.DEBUG, True, False, "deep_recovery_budget"),
+        FailureClass.TERMINAL_NONRECOVERABLE: (NextAction.BLOCKED, None, False, False, None),
     }
 
     @classmethod
@@ -64,55 +59,70 @@ class NextActionSelector:
     ) -> NextActionDecision:
         rejection_ledger = rejection_ledger or []
         attempt_history = attempt_history or []
-        base_action, attempt_type, consumes_budget, requires_user = cls._ACTION_MATRIX.get(
+        base_action, attempt_type, consumes_budget, requires_user, budget_key = cls._ACTION_MATRIX.get(
             evidence.failure_class,
-            (NextAction.BLOCKED, None, False, False),
+            (NextAction.BLOCKED, None, False, False, None),
         )
         rule_fired = f"matrix:{evidence.failure_class.value}"
         rejected_alternatives: list[str] = []
 
-        if evidence.failure_class == FailureClass.VALIDATION_FAILURE:
-            repeated_signature = sum(
-                1 for item in attempt_history if item.get("signature") == evidence.signature
-            )
-            if repeated_signature >= 2 or len(evidence.prior_attempts) >= 2:
+        if evidence.failure_class == FailureClass.RETRYABLE:
+            if "integration_hint" in evidence.hints:
+                base_action = NextAction.INTEGRATE
+                attempt_type = AttemptType.INTEGRATE
+                budget_key = "integration_attempt_budget"
+                rule_fired = "retryable:integration_hint->integrate"
+            elif "environment_hint" in evidence.hints:
+                base_action = NextAction.REPAIR
+                attempt_type = AttemptType.REPAIR
+                budget_key = "repair_attempt_budget"
+                rule_fired = "retryable:environment_hint->repair"
+            elif sum(1 for item in attempt_history if item.get("signature") == evidence.signature) >= 2 or evidence.repeated_failure:
                 base_action = NextAction.DEBUG
                 attempt_type = AttemptType.DEBUG
-                rule_fired = "validation_failure:repeated_signature->debug"
+                budget_key = "deep_recovery_budget"
+                rule_fired = "retryable:repeated_signature->deep_recovery"
                 rejected_alternatives.append("repair")
 
-        if evidence.failure_class == FailureClass.MODEL_LIMITATION and len(evidence.prior_attempts) >= 2:
-            base_action = NextAction.DEBUG
-            attempt_type = AttemptType.DEBUG
-            rule_fired = "model_limitation:escalate_to_debug"
-            rejected_alternatives.append("repair")
+        if evidence.failure_class == FailureClass.STUCK_OR_REPEATING:
+            if evidence.progress_made and budgets_remaining.get("repair_attempt_budget", 0) > 0:
+                rejected_alternatives.append("blocked")
+            if workspace_policy == "integration_only_fresh_merge":
+                rejected_alternatives.append("salvage")
 
-        if evidence.failure_class == FailureClass.ARCHITECTURE_MISMATCH:
-            if any(entry.get("action") == "revise_plan" for entry in rejection_ledger):
-                base_action = NextAction.ESCALATE
-                rule_fired = "architecture_mismatch:escalate_after_prior_revision"
-            else:
-                rejected_alternatives.append("repair")
+        if evidence.failure_class == FailureClass.TERMINAL_NONRECOVERABLE:
+            question_packet = None
+            reasoning = f"{rule_fired}: terminal evidence-backed stop"
+            return NextActionDecision(
+                action=NextAction.BLOCKED,
+                attempt_type=None,
+                reasoning=reasoning,
+                budget_consumed=False,
+                requires_user_input=False,
+                question_packet=question_packet,
+                rule_fired=rule_fired,
+                rejected_alternatives=rejected_alternatives,
+                inputs_considered=cls._inputs(evidence, budgets_remaining, rejection_ledger, attempt_history, workspace_policy),
+                budget_key=budget_key,
+            )
 
-        if evidence.failure_class == FailureClass.LOOP_DETECTED and workspace_policy == "integration_only_fresh_merge":
-            rejected_alternatives.append("salvage")
-
-        if attempt_type and consumes_budget:
-            budget_key = cls._attempt_type_to_budget_key(attempt_type)
-            if budgets_remaining.get(budget_key, 0) <= 0:
-                return NextActionDecision(
-                    action=NextAction.BLOCKED,
-                    reasoning=f"{budget_key} exhausted for {evidence.failure_class.value}",
-                    budget_consumed=False,
-                    rule_fired=f"budget_exhausted:{budget_key}",
-                    rejected_alternatives=[base_action.value],
-                    inputs_considered=cls._inputs(evidence, budgets_remaining, rejection_ledger, attempt_history, workspace_policy),
-                )
+        if budget_key and budgets_remaining.get(budget_key, 0) <= 0:
+            return NextActionDecision(
+                action=NextAction.BLOCKED,
+                reasoning=f"{budget_key} exhausted for {evidence.failure_class.value}",
+                budget_consumed=False,
+                rule_fired=f"budget_exhausted:{budget_key}",
+                rejected_alternatives=[base_action.value],
+                inputs_considered=cls._inputs(evidence, budgets_remaining, rejection_ledger, attempt_history, workspace_policy),
+                budget_key=budget_key,
+            )
 
         question_packet = cls._build_question_packet(evidence) if requires_user else None
         reasoning = f"{rule_fired}: {evidence.failure_class.value} -> {base_action.value}"
         if evidence.root_cause_hypothesis:
             reasoning += f" (hypothesis: {evidence.root_cause_hypothesis})"
+        if evidence.hints:
+            reasoning += f" [hints: {', '.join(sorted(evidence.hints))}]"
 
         return NextActionDecision(
             action=base_action,
@@ -124,6 +134,7 @@ class NextActionSelector:
             rule_fired=rule_fired,
             rejected_alternatives=rejected_alternatives,
             inputs_considered=cls._inputs(evidence, budgets_remaining, rejection_ledger, attempt_history, workspace_policy),
+            budget_key=budget_key,
         )
 
     @staticmethod
@@ -150,25 +161,55 @@ class NextActionSelector:
             AttemptType.DEBUG: "debug_attempt_budget",
             AttemptType.REVIEW: "review_rejection_budget",
             AttemptType.SALVAGE: "salvage_attempt_budget",
-            AttemptType.INTEGRATE: "integration_budget",
+            AttemptType.INTEGRATE: "integration_attempt_budget",
             AttemptType.REVALIDATE: "repair_attempt_budget",
         }.get(attempt_type, "repair_attempt_budget")
 
     @staticmethod
     def _build_question_packet(evidence: FailureEvidencePacket) -> dict[str, Any]:
-        if evidence.failure_class == FailureClass.AMBIGUITY_BLOCK:
+        requirement = dict(evidence.metadata.get("required_user_input") or {})
+        qtype = str(requirement.get("type") or "user_input_required")
+        target = requirement.get("target")
+        if target is not None:
+            target = str(target)
+
+        if qtype == "credential_required":
+            question = "Missing credential or secret required to proceed."
+            if target:
+                question = f"Missing credential or secret required to proceed: {target}."
+        elif qtype == "approval_required":
+            question = "Explicit approval required before continuing."
+            if target:
+                question = f"Explicit approval required before continuing: {target}."
+        elif qtype == "clarification_needed":
             question = "The request is ambiguous. What specific behavior do you want?"
-            qtype = "clarification_needed"
-        elif evidence.failure_class == FailureClass.MISSING_DEPENDENCY:
-            question = "Missing dependency required to proceed. How would you like to provide it?"
-            qtype = "dependency_required"
+            if target:
+                question = f"Clarification required before continuing: {target}."
         else:
-            question = f"Blocked by failure class: {evidence.failure_class.value}"
-            qtype = "general"
-        return {
+            question = "Human input required to continue."
+            if target:
+                question = f"Human input required to continue: {target}."
+
+        if not requirement:
+            if "credential_hint" in evidence.hints:
+                qtype = "credential_required"
+                question = "Missing credential or secret required to proceed."
+            elif "approval_hint" in evidence.hints:
+                qtype = "approval_required"
+                question = "Explicit approval required before continuing."
+            elif "ambiguity_hint" in evidence.hints:
+                qtype = "clarification_needed"
+                question = "The request is ambiguous. What specific behavior do you want?"
+
+        packet = {
             "type": qtype,
             "question": question,
             "evidence_refs": list(evidence.evidence_refs),
             "task_id": evidence.task_id,
             "attempt_id": evidence.attempt_id,
         }
+        if target:
+            packet["target"] = target
+        if requirement.get("source"):
+            packet["source"] = requirement["source"]
+        return packet

@@ -7,14 +7,17 @@ from crucible.accelerators.capabilities import Capability
 from crucible.runtime.local_shell_adapter import LocalShellAdapter
 
 
-def _spec(cmd, expected="", spec_id="s1", timeout=10):
+def _spec(cmd, expected="", spec_id="s1", timeout=10, cwd="/tmp", metadata=None):
+    payload = {"expected_output": expected}
+    if metadata:
+        payload.update(metadata)
     return AdapterRunSpec(
         spec_id=spec_id,
         prompt=cmd,
-        cwd="/tmp",
+        cwd=cwd,
         timeout_seconds=timeout,
         required_capabilities={Capability.SHELL_EXEC},
-        metadata={"expected_output": expected},
+        metadata=payload,
     )
 
 
@@ -66,6 +69,22 @@ class TestRealExecution:
         result = adapter.collect(handle)
         assert result.status == AdapterStatus.TIMED_OUT
         assert "timed out" in result.error.lower()
+
+    def test_python_virtualenv_bin_is_added_to_path(self, tmp_path):
+        adapter = LocalShellAdapter()
+        bin_dir = tmp_path / ".venv" / "bin"
+        bin_dir.mkdir(parents=True)
+        script = bin_dir / "hello-from-venv"
+        script.write_text("#!/bin/sh\necho READY\n")
+        script.chmod(0o755)
+        handle = adapter.spawn(_spec(
+            "hello-from-venv",
+            expected="READY",
+            cwd=str(tmp_path),
+            metadata={"environment": {"strategy": {"environment_path": str(tmp_path / '.venv')}, "detected": {"ecosystem": "python"}}},
+        ))
+        result = adapter.collect(handle)
+        assert result.status == AdapterStatus.COMPLETE
     
     def test_capability_check_rejects_unsupported(self):
         adapter = LocalShellAdapter()

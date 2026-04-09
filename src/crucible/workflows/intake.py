@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
 
+from crucible.environment.existing_repo import detect_existing_repo_environment
+
 
 class Confidence(str, Enum):
     HIGH = "high"
@@ -182,6 +184,14 @@ def inspect_repo(repo_path: str) -> IntakeReport:
                 evidence=evidence,
                 confidence=Confidence.HIGH if len(evidence) > 1 else Confidence.MEDIUM,
             ))
+
+    detected_env = detect_existing_repo_environment(repo_path)
+    if detected_env.language != "unknown" and not any(d.label == detected_env.language for d in report.languages):
+        report.languages.append(Detection(
+            label=detected_env.language,
+            evidence=detected_env.evidence.get("language", ["environment detector"]),
+            confidence=Confidence.HIGH if detected_env.confidence == "high" else Confidence.MEDIUM,
+        ))
     
     # Detect package managers
     for pm, files in PACKAGE_MANAGER_SIGNATURES.items():
@@ -192,6 +202,12 @@ def inspect_repo(repo_path: str) -> IntakeReport:
                 evidence=evidence,
                 confidence=Confidence.HIGH,
             ))
+    if detected_env.package_manager != "unknown" and not any(d.label == detected_env.package_manager for d in report.package_managers):
+        report.package_managers.append(Detection(
+            label=detected_env.package_manager,
+            evidence=detected_env.evidence.get("package_manager", ["environment detector default"]),
+            confidence=Confidence.HIGH if detected_env.confidence == "high" else Confidence.MEDIUM,
+        ))
     
     # Detect test frameworks (deeper)
     pyproject_path = os.path.join(repo_path, "pyproject.toml")
@@ -239,6 +255,19 @@ def inspect_repo(repo_path: str) -> IntakeReport:
             report.test_frameworks.append(Detection(
                 label=tf, evidence=evidence, confidence=confidence,
             ))
+    if detected_env.test_tool != "unknown" and not any(d.label == detected_env.test_tool for d in report.test_frameworks):
+        report.test_frameworks.append(Detection(
+            label=detected_env.test_tool,
+            evidence=detected_env.evidence.get("test_tool", ["environment detector default"]),
+            confidence=Confidence.MEDIUM,
+        ))
+
+    if detected_env.build_tool != "unknown" and not any(d.label == detected_env.build_tool for d in report.build_systems):
+        report.build_systems.append(Detection(
+            label=detected_env.build_tool,
+            evidence=detected_env.evidence.get("build_tool", ["environment detector default"]),
+            confidence=Confidence.MEDIUM,
+        ))
     
     # CI detection
     for ci_name, ci_path in CI_SIGNATURES.items():

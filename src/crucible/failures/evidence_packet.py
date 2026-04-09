@@ -1,4 +1,4 @@
-"""Failure evidence packet for Crucible v5.4."""
+"""Failure evidence packet for Crucible v6.1."""
 
 from __future__ import annotations
 
@@ -9,19 +9,19 @@ from typing import Any
 
 
 class FailureClass(str, Enum):
-    AMBIGUITY_BLOCK = "ambiguity_block"
-    ENVIRONMENT_BLOCK = "environment_block"
-    MISSING_DEPENDENCY = "missing_dependency"
-    ARCHITECTURE_MISMATCH = "architecture_mismatch"
-    MODEL_LIMITATION = "model_limitation"
-    VALIDATION_FAILURE = "validation_failure"
-    INTEGRATION_CONFLICT = "integration_conflict"
-    LOOP_DETECTED = "loop_detected"
+    RETRYABLE = "retryable"
+    NEEDS_USER_INPUT = "needs_user_input"
+    STUCK_OR_REPEATING = "stuck_or_repeating"
+    TERMINAL_NONRECOVERABLE = "terminal_nonrecoverable"
 
 
 @dataclass
 class FailureEvidencePacket:
-    """Structured, durable failure evidence consumed by policy code."""
+    """Structured, durable failure evidence consumed by policy code.
+
+    v6.1 keeps the top-level control plane intentionally thin and pushes
+    specificity into evidence, hints, metadata, and attempt history.
+    """
 
     failure_class: FailureClass
     attempt_id: str
@@ -42,13 +42,15 @@ class FailureEvidencePacket:
     failing_command: str | None = None
     missing_artifacts: list[str] = field(default_factory=list)
     recent_lane: str | None = None
+    hints: list[str] = field(default_factory=list)
+    progress_made: bool = False
+    repeated_failure: bool = False
+    external_input_required: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.attempt_id:
             raise ValueError("attempt_id is required")
-        if self.failure_class == FailureClass.VALIDATION_FAILURE and not self.criterion:
-            raise ValueError("VALIDATION_FAILURE requires criterion context")
         if self.task_id is None:
             self.task_id = self._infer_task_id()
         if self.signature is None:
@@ -69,20 +71,18 @@ class FailureEvidencePacket:
         parts = [self.failure_class.value]
         if self.criterion:
             parts.append(f"criterion={self.criterion}")
+        if self.hints:
+            parts.append(f"hints={','.join(sorted(self.hints))}")
         if self.error_message:
             parts.append(self.error_message)
         return "; ".join(parts)
 
     def _default_roles(self) -> list[str]:
         mapping = {
-            FailureClass.AMBIGUITY_BLOCK: ["user"],
-            FailureClass.ENVIRONMENT_BLOCK: ["builder"],
-            FailureClass.MISSING_DEPENDENCY: ["user"],
-            FailureClass.ARCHITECTURE_MISMATCH: ["reviewer", "user"],
-            FailureClass.MODEL_LIMITATION: ["builder", "debugger"],
-            FailureClass.VALIDATION_FAILURE: ["builder"],
-            FailureClass.INTEGRATION_CONFLICT: ["integrator"],
-            FailureClass.LOOP_DETECTED: ["debugger"],
+            FailureClass.RETRYABLE: ["builder"],
+            FailureClass.NEEDS_USER_INPUT: ["user"],
+            FailureClass.STUCK_OR_REPEATING: ["debugger"],
+            FailureClass.TERMINAL_NONRECOVERABLE: ["user", "reviewer"],
         }
         return mapping[self.failure_class]
 
@@ -92,6 +92,7 @@ class FailureEvidencePacket:
         lane = self.recent_lane or "-"
         artifact_shape = ",".join(sorted(self.missing_artifacts)) or "-"
         evidence_shape = ",".join(sorted(self.evidence_refs)) or "-"
+        hint_shape = ",".join(sorted(self.hints)) or "-"
         return "|".join([
             self.failure_class.value,
             criterion,
@@ -99,6 +100,7 @@ class FailureEvidencePacket:
             artifact_shape,
             lane,
             evidence_shape,
+            hint_shape,
         ])
 
     def to_next_action_input(self) -> dict[str, Any]:
@@ -116,6 +118,10 @@ class FailureEvidencePacket:
             "consumes_budget": self.consumes_budget,
             "recommended_next_roles": list(self.recommended_next_roles),
             "recent_lane": self.recent_lane,
+            "hints": list(self.hints),
+            "progress_made": self.progress_made,
+            "repeated_failure": self.repeated_failure,
+            "external_input_required": self.external_input_required,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,5 +144,9 @@ class FailureEvidencePacket:
             "failing_command": self.failing_command,
             "missing_artifacts": list(self.missing_artifacts),
             "recent_lane": self.recent_lane,
+            "hints": list(self.hints),
+            "progress_made": self.progress_made,
+            "repeated_failure": self.repeated_failure,
+            "external_input_required": self.external_input_required,
             "metadata": dict(self.metadata),
         }

@@ -482,10 +482,11 @@ class RunStore:
                     records.append(TaskAttemptRecord.from_dict(json.load(f)))
             except (json.JSONDecodeError, KeyError):
                 continue
-        return records
-    
+        return sorted(records, key=lambda record: (record.task_id, record.attempt_index, record.attempt_id))
+
     def attempts_for_task(self, task_id: str) -> list[TaskAttemptRecord]:
-        return [a for a in self.list_attempts() if a.task_id == task_id]
+        attempts = [a for a in self.list_attempts() if a.task_id == task_id]
+        return sorted(attempts, key=lambda record: (record.attempt_index, record.attempt_id))
     
     def reconcile_in_flight_attempts(self) -> list[TaskAttemptRecord]:
         """After restart, mark any non-terminal attempts as needing reconciliation.

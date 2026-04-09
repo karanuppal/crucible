@@ -14,17 +14,18 @@ In plain English: you point Crucible at a software task, and it keeps pushing th
 
 ## Current Status
 
-**Status:** v5.4 runtime implemented and test-backed  
+**Status:** v6.1 runtime implemented and test-backed  
 **Branch:** `phase8-production-runtime`  
-**Latest local verification:** `714 passed`
+**Latest local verification:** `728 passed`
 
 What is in the repo now:
-- v5.2 / v5.3 / v5.4 design docs
+- v5.2 / v5.3 / v5.4 design docs plus v6 / v6.1 follow-on specs
 - deterministic runtime primitives
 - OpenClaw-facing runtime surface
 - durable typed-attempt storage
 - workspace + evidence handling
-- review / failure-classification / repair-loop infrastructure
+- thin 4-class control-plane failure model
+- evidence/hint-driven recovery and repair-loop infrastructure
 - SWE-bench Verified starter setup for real-world evaluation
 
 ## What Crucible Is For
@@ -66,11 +67,15 @@ src/crucible/
 - `docs/agentic-harness-spec-v5.2.md`
 - `docs/crucible-spec-v5.3.md`
 - `docs/crucible-spec-v5.4.md`
+- `docs/crucible-spec-v6.md`
+- `docs/crucible-spec-v6.1.md`
 - `docs/architecture.md`
 
 ### Plans / implementation history
 - `EXECUTION_PLAN.md`
 - `docs/execution-plan-v5.4.md`
+- `docs/execution-plan-v6.md`
+- `docs/execution-plan-v6.1.md`
 
 ### Evaluation
 - `docs/evals/swebench-verified/README.md`
@@ -176,7 +181,7 @@ uv run pytest -q
 
 ### 3. Inspect the runtime path
 
-Start here if you want to understand how the v5.4 loop works:
+Start here if you want to understand how the v6.1 loop works:
 - `src/crucible/runtime/run_executor.py`
 - `src/crucible/orchestrator/closed_loop_executor.py`
 - `src/crucible/orchestrator/task_state_machine.py`
@@ -189,7 +194,8 @@ Start here if you want to understand how the v5.4 loop works:
 Start here for confidence:
 - `tests/runtime/test_closed_loop_runtime_e2e.py`
 - `tests/runtime/test_failure_classification_v54.py`
-- `tests/runtime/test_openclaw_tool_v54.py`
+- `tests/runner/test_handoff_controller.py`
+- `tests/runner/test_role_executor.py`
 - `tests/orchestrator/test_closed_loop_executor.py`
 - `tests/orchestrator/test_run_closure.py`
 - `tests/orchestrator/test_task_state_machine.py`
@@ -231,8 +237,8 @@ When changing the closure loop, make sure you are not just improving event narra
 
 If you just landed here and want to orient quickly:
 
-1. Read `docs/crucible-spec-v5.4.md`
-2. Read `docs/execution-plan-v5.4.md`
+1. Read `docs/crucible-spec-v6.1.md`
+2. Read `docs/execution-plan-v6.1.md`
 3. Run `uv sync --all-extras --dev`
 4. Run `uv run pytest -q`
 5. Read `tests/runtime/test_closed_loop_runtime_e2e.py`

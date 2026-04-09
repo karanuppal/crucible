@@ -185,6 +185,27 @@ Higher-level workflows on top of the runtime.
 
 These are more task-shaping / workflow-facing than core closure semantics.
 
+### 12. v6.1 recovery model
+LLM-backed recovery still exists, but v6.1 collapses the control plane around it.
+
+Key rules:
+- the runtime classifies failures into exactly four control-plane classes
+- specificity lives in evidence packets, hints, and metadata
+- workers can still choose environment fixes, dependency work, or deeper debugging, but those are strategy choices inside existing attempt types
+- the selector should prefer coarse actions like `repair`, `debug`, `integrate`, `awaiting_user`, or `blocked` rather than hidden named recovery lanes
+
+### 13. `policy/` budgets in v6.1
+Budgets remain attempt-oriented, with additional headroom for materially different retries:
+- `build_attempt_budget`
+- `repair_attempt_budget`
+- `debug_attempt_budget`
+- `review_rejection_budget`
+- `salvage_attempt_budget`
+- `integration_attempt_budget`
+- `deep_recovery_budget`
+
+`deep_recovery_budget` is the only explicitly recovery-shaped budget. It exists to fund materially different retries after repeated or collapsing search, not to create a second lane taxonomy.
+
 ## Core runtime loop
 
 A simplified v5.4-style loop looks like this:
@@ -266,6 +287,20 @@ That means the runtime should prefer:
 
 over ad hoc string matching or casual interpretation.
 
+## LLM-augmented recovery under v6.1
+
+A critical v6.1 principle is:
+
+> **The harness should keep trying autonomously when the control plane says the task is still recoverable.**
+
+This means:
+- retryable failures continue through coarse runtime actions like `repair` or `integrate`
+- repeated/collapsing searches escalate to `debug` and spend deep-recovery budget
+- missing secrets, approvals, or unresolved decisions pause with a targeted blocker packet
+- terminal stops happen only when the runtime has evidence that current scope/authority/tools are insufficient
+
+The worker is still a problem-solver, but the control plane stays thin. Specific recovery tactics belong in evidence, hints, and worker strategy — not named top-level lanes.
+
 ## OpenClaw integration model
 
 OpenClaw is the conversational / tool surface.
@@ -308,13 +343,20 @@ Crucible exists to replace that with a system that is:
 If you are new to the repo, this is the best path:
 
 1. `README.md`
-2. `docs/crucible-spec-v5.4.md`
+2. `docs/crucible-spec-v6.1.md`
 3. `src/crucible/runtime/run_executor.py`
 4. `src/crucible/orchestrator/closed_loop_executor.py`
 5. `src/crucible/orchestrator/task_state_machine.py`
 6. `src/crucible/failures/next_action_selector.py`
 7. `src/crucible/runtime/run_store.py`
 8. `tests/runtime/test_closed_loop_runtime_e2e.py`
+
+For the v6.1 control plane specifically:
+1. `docs/crucible-spec-v6.1.md`
+2. `src/crucible/failures/taxonomy.py`
+3. `src/crucible/failures/evidence_packet.py`
+4. `src/crucible/failures/next_action_selector.py`
+5. `src/crucible/policy/budgets.py`
 
 ## Current limitations / future cleanup
 
@@ -325,6 +367,54 @@ Even with the current v5.4 work, there is still normal engineering cleanup that 
 - expanding more true end-to-end scenarios
 
 Those are refinement tasks, not a change in the fundamental architecture.
+
+## Environment Provisioning
+
+Crucible includes an environment provisioning system that automatically detects and sets up runtime environments for existing repositories. This is particularly important for benchmark tasks (like SWE-bench) where the target repository may need to be built before tasks can run.
+
+### How it works
+
+The environment subsystem (`src/crucible/environment/`) provides:
+
+1. **Detection**: `detect_existing_repo_environment()` scans the repository to identify:
+   - Ecosystem (Python, Node, Rust, Go, Ruby)
+   - Language and runtime
+   - Package manager (uv, pip, npm, pnpm, yarn, cargo, etc.)
+   - Build tool (setuptools, hatchling, poetry, vite, etc.)
+   - Test tool (pytest, vitest, jest, etc.)
+
+2. **Strategy Selection**: `choose_environment_strategy()` selects the appropriate provisioning commands based on detected ecosystem and tools.
+
+3. **Provisioning**: `ensure_existing_repo_environment()` executes the provisioning steps:
+   - Creates virtual environments (Python) or installs dependencies (Node)
+   - Validates the environment is usable
+   - Records metadata for later inspection
+
+### Environment contract
+
+The key design principle is:
+
+> **Either the environment is pre-set up (by the user/host) OR Crucible takes care of setting it up.**
+
+This means:
+- If a valid environment already exists (e.g., `.venv` with dependencies installed), Crucible uses it as-is
+- If no environment exists, Crucible provisions one automatically using the detected strategy
+- If provisioning fails, the failure is captured with structured evidence and the run is blocked with a clear error
+
+### Integration with runtime
+
+Environment provisioning is integrated into the build phase of the execution loop:
+- During `build` attempts, the runtime calls `ensure_existing_repo_environment()` on the target workspace
+- The result (success or failure) is stored in the workspace metadata
+- If provisioning fails, the failure is classified and the appropriate next action is selected
+
+### Benchmark use case
+
+For SWE-bench and similar benchmarks:
+- The benchmark provides a repository at a specific commit
+- Crucible detects the ecosystem and provisions the environment
+- Tasks then run against the provisioned environment
+- This allows benchmarks to be run without manual environment setup
 
 ## Summary
 

@@ -73,7 +73,7 @@ class BudgetTracker:
         AttemptType.DEBUG: "debug_attempt_budget",
         AttemptType.REVIEW: "review_rejection_budget",
         AttemptType.SALVAGE: "salvage_attempt_budget",
-        AttemptType.INTEGRATE: "integration_budget",
+        AttemptType.INTEGRATE: "integration_attempt_budget",
         AttemptType.REVALIDATE: "repair_attempt_budget",  # Revalidate uses repair budget
     }
     
@@ -95,9 +95,13 @@ class BudgetTracker:
     def get_remaining(self, attempt_type: AttemptType) -> int:
         """Get remaining budget for an attempt type."""
         key = self.BUDGET_KEYS.get(attempt_type)
-        if key not in self._budgets:
+        return self.get_remaining_for_key(key)
+
+    def get_remaining_for_key(self, budget_key: str | None) -> int:
+        """Get remaining budget for an explicit budget key."""
+        if budget_key not in self._budgets:
             return 0
-        return self._budgets[key].remaining
+        return self._budgets[budget_key].remaining
     
     def get_all_remaining(self) -> dict[str, int]:
         """Get all remaining budgets as dict."""
@@ -107,6 +111,10 @@ class BudgetTracker:
         """Check if an attempt type is still allowed."""
         remaining = self.get_remaining(attempt_type)
         return remaining > 0
+
+    def can_attempt_budget(self, budget_key: str | None) -> bool:
+        """Check whether an explicit budget bucket still has remaining capacity."""
+        return self.get_remaining_for_key(budget_key) > 0
     
     def consume(self, attempt_type: AttemptType, reason: str = "") -> bool:
         """
@@ -115,10 +123,13 @@ class BudgetTracker:
         Returns True if successful, False if exhausted.
         """
         key = self.BUDGET_KEYS.get(attempt_type)
-        if key not in self._budgets:
+        return self.consume_budget(key, reason)
+
+    def consume_budget(self, budget_key: str | None, reason: str = "") -> bool:
+        """Attempt to consume one unit from an explicit budget bucket."""
+        if budget_key not in self._budgets:
             return False
-        
-        return self._budgets[key].consume(reason)
+        return self._budgets[budget_key].consume(reason)
     
     def is_exhausted(self, attempt_type: AttemptType) -> bool:
         """Check if attempt type budget is exhausted."""

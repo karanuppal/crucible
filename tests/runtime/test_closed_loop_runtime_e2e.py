@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from crucible.failures.evidence_packet import FailureClass
+
 from crucible.accelerators.adapters import (
     AdapterRunHandle,
     AdapterRunResult,
@@ -273,12 +275,12 @@ def test_environment_fix_continues_through_true_runtime_path(tmp_path):
 
     assert summary.terminal_status == "complete"
     attempts = store.attempts_for_task("task-1")
-    assert [a.attempt_type for a in attempts] == ["build", "build", "review"]
+    assert [a.attempt_type for a in attempts] == ["build", "repair", "review"]
     assert attempts[0].status == "failed"
     assert attempts[1].status == "complete"
     events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
     event_types = [e["type"] for e in events]
-    assert "environment_fix_scheduled" in event_types
+    assert "repair_scheduled" in event_types
     assert event_types.count("attempt_started") == 3
     assert "task_completed" in event_types
 
@@ -502,3 +504,67 @@ def test_review_rejection_routes_to_debug_and_blocks_when_budget_exhausted(tmp_p
     event_types = [e["type"] for e in events]
     assert "review_rejected" in event_types
     assert "debug_scheduled" in event_types
+
+
+def test_missing_env_toolchain_blocks_runtime_instead_of_crashing(tmp_path, monkeypatch):
+    plan = {
+        "spec": "runtime missing toolchain",
+        "project_id": "loop-e2e",
+        "build_id": "b-missing-toolchain",
+        "tasks": [{
+            "task_id": "task-1",
+            "description": "prove missing uv becomes environment_block",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "src/app.txt",
+                    "verification_command": "echo PASS",
+                    "expected_output": "PASS",
+                },
+            }],
+            "role": "builder",
+            "intensity_hint": "S",
+            "review_required": False,
+        }],
+    }
+    normalized = lint_plan(plan).normalized_plan or plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed").mkdir(parents=True)
+    (tmp_path / "seed" / "pyproject.toml").write_text(
+        """
+[project]
+name = "demo"
+version = "0.1.0"
+""".strip()
+    )
+    monkeypatch.setenv("PATH", str(tmp_path / "missing-bin"))
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=lambda s: [RepairingAdapter()],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == "failed"
+    attempts = store.attempts_for_task("task-1")
+    assert attempts
+    assert all(a.status == "failed" for a in attempts)
+    assert all(a.metadata["environment"]["failure_class"] == "environment_block" for a in attempts)
+    assert all(a.metadata["environment"]["missing_executables"] == ["uv"] for a in attempts)
+    evidence = json.loads(Path(attempts[0].failure_packet_ref).read_text())
+    assert evidence["failure_class"] == FailureClass.RETRYABLE.value
+    assert "environment_hint" in evidence["hints"]
+    assert evidence["error_message"] == "missing required executable: uv"
+    events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
+    assert any(event["type"] == "repair_scheduled" for event in events)

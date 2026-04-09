@@ -327,7 +327,7 @@ class Orchestrator:
             return  # already recorded — don't double-count
         self._state.failed_tasks.append(task_id)
         # Classify failure and feed circuit breaker
-        classification = classify_failure(FailureClass.VALIDATION_FAILURE, description=reason)
+        classification = classify_failure(FailureClass.RETRYABLE, description=reason)
         self._circuit_breaker.record_error(task_id, self._circuit_breaker.get_error_signature(reason))
         self._ledger.create_event(
             project_id=self._project_id,

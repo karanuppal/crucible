@@ -147,11 +147,27 @@ class TestAttempts:
             attempt_id="t1-attempt-1", task_id="t1", attempt_index=1,
             backend_id="b", status="complete", winning_attempt=True,
         ))
-        
+
         attempts = store.attempts_for_task("t1")
         assert len(attempts) == 2
+        assert [a.attempt_index for a in attempts] == [0, 1]
         winning = [a for a in attempts if a.winning_attempt]
         assert len(winning) == 1
+
+    def test_attempts_for_task_sorts_by_attempt_index_not_filename(self, tmp_path):
+        store, _ = create_run_store(
+            run_id=None, project_id="p1", build_id="b1",
+            spec_text="x", task_plan=_plan(),
+            runs_root=str(tmp_path / "runs"),
+        )
+        for idx in [10, 2, 1]:
+            store.write_attempt(TaskAttemptRecord(
+                attempt_id=f"t1-attempt-{idx}", task_id="t1", attempt_index=idx,
+                backend_id="b", status="failed",
+            ))
+
+        attempts = store.attempts_for_task("t1")
+        assert [a.attempt_index for a in attempts] == [1, 2, 10]
 
 
 class TestReconciliation:

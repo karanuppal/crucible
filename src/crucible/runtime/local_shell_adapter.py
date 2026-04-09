@@ -105,6 +105,16 @@ class LocalShellAdapter(BackendAdapter):
         
         timeout = spec.timeout_seconds or self._default_timeout
         cwd = spec.cwd or os.getcwd()
+        env = os.environ.copy()
+        environment_meta = (getattr(spec, "metadata", None) or {}).get("environment", {}) if isinstance(getattr(spec, "metadata", None), dict) else {}
+        strategy = environment_meta.get("strategy", {}) if isinstance(environment_meta, dict) else {}
+        env_path = strategy.get("environment_path") if isinstance(strategy, dict) else ""
+        detected = environment_meta.get("detected", {}) if isinstance(environment_meta, dict) else {}
+        if env_path and os.path.isdir(env_path):
+            env["PATH"] = os.path.join(env_path, "bin") + os.pathsep + env.get("PATH", "")
+            env.setdefault("VIRTUAL_ENV", env_path)
+        if isinstance(detected, dict) and detected.get("ecosystem") == "node":
+            env["PATH"] = os.path.join(cwd, "node_modules", ".bin") + os.pathsep + env.get("PATH", "")
         
         # Run synchronously. spawn() blocks; this is fine because the
         # orchestrator's per-task loop is also synchronous.
@@ -116,6 +126,7 @@ class LocalShellAdapter(BackendAdapter):
                 text=True,
                 timeout=timeout,
                 cwd=cwd,
+                env=env,
             )
             stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
             timed_out = False

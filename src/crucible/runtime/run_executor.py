@@ -20,6 +20,7 @@ from crucible.accelerators.adapters import (
 )
 from crucible.accelerators.capabilities import Capability
 from crucible.evidence.store import EvidenceManifest, EvidenceStore
+from crucible.environment.existing_repo import ExistingRepoProvisionError, ensure_existing_repo_environment
 from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
 from crucible.failures.next_action_selector import NextAction, NextActionSelector
 from crucible.orchestrator.closed_loop_executor import ClosedLoopExecutor, TaskContext, TaskStatus
@@ -353,19 +354,25 @@ def _execute_task_closed_loop(
 
         if decision.action == NextAction.REPAIR:
             store.append_event("repair_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "repair"})
-            return executor._start_repair(ctx)
+            ctx = executor._start_repair(ctx)
+            if ctx.status == TaskStatus.BLOCKED:
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+            return ctx
         if decision.action == NextAction.DEBUG:
             store.append_event("debug_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "debug"})
-            return executor._start_debug(ctx)
+            ctx = executor._start_debug(ctx)
+            if ctx.status == TaskStatus.BLOCKED:
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+            return ctx
         if decision.action == NextAction.SALVAGE:
             store.append_event("salvage_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "salvage"})
-            return executor._start_salvage(ctx)
-        if decision.action == NextAction.ENVIRONMENT_FIX:
-            store.append_event("environment_fix_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "build", "budget_consumed": False})
-            ctx.status = TaskStatus.QUEUED
-            ctx.current_attempt = None
+            ctx = executor._start_salvage(ctx)
+            if ctx.status == TaskStatus.BLOCKED:
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
             return ctx
-
         ctx.status = TaskStatus.BLOCKED
         store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": "blocked"})
         store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": "blocked"})
@@ -407,8 +414,16 @@ def _materialize_workspace(
     exclude_roots = [Path(run_root).resolve()]
     if record.lineage_type == WorkspaceLineageType.FRESH:
         _copy_workspace(Path(workspace_root), target_path, exclude_roots=exclude_roots)
+        try:
+            provision_result = ensure_existing_repo_environment(str(target_path))
+        except ExistingRepoProvisionError as exc:
+            record.metadata["environment"] = exc.result.to_dict()
+        else:
+            record.metadata["environment"] = provision_result.to_dict()
     elif previous is not None and previous.workspace_record.path:
         _copy_workspace(Path(previous.workspace_record.path), target_path, exclude_roots=exclude_roots)
+        if previous.workspace_record.metadata.get("environment"):
+            record.metadata["environment"] = previous.workspace_record.metadata["environment"]
     return record
 
 
@@ -418,7 +433,7 @@ def _copy_workspace(src: Path, dest: Path, *, exclude_roots: list[Path] | None =
     exclude_roots = [p.resolve() for p in (exclude_roots or [])]
     for child in src.iterdir():
         resolved = child.resolve()
-        if child.name in {"runs", ".git", "__pycache__"}:
+        if child.name in {"runs", ".git", "__pycache__", ".venv", "node_modules"}:
             continue
         if any(
             resolved == root or root in resolved.parents or resolved in root.parents
@@ -467,6 +482,55 @@ def _run_attempt(
     any_must_pass_present = False
     all_must_pass_passed = True
     first_failure_packet: FailureEvidencePacket | None = None
+    env_meta = workspace_record.metadata.get("environment") if isinstance(workspace_record.metadata, dict) else None
+    if isinstance(env_meta, dict) and env_meta.get("status") == "failed":
+        failure_class = _normalize_failure_class(env_meta.get("failure_class"), default=FailureClass.RETRYABLE)
+        first_failure_packet = FailureEvidencePacket(
+            failure_class=failure_class,
+            attempt_id=attempt_id,
+            task_id=task["task_id"],
+            criterion=criteria[0].get("criterion_id", "environment") if criteria else "environment",
+            evidence_refs=[env_meta.get("metadata_path", "")],
+            error_message=env_meta.get("failure_reason", "environment provisioning failed"),
+            root_cause_hypothesis=env_meta.get("failure_reason", "environment provisioning failed"),
+            prior_attempts=[a.attempt_id for a in prior_attempts],
+            failing_command="environment_provision",
+            recent_lane=attempt_type.value,
+            hints=["environment_hint"] if env_meta.get("failure_class") == "environment_block" else [],
+            metadata={"environment": env_meta},
+        )
+        packet_path = evidence_store.store_evidence_packet(first_failure_packet)
+        manifest_path = evidence_store.store_manifest(evidence_manifest)
+        task_blockers.append(first_failure_packet.error_message or "environment provisioning failed")
+        attempt_record = TaskAttemptRecord(
+            attempt_id=attempt_id,
+            task_id=task["task_id"],
+            attempt_index=attempt_index,
+            backend_id=adapter.backend_id(),
+            status=AdapterStatus.FAILED.value,
+            winning_attempt=False,
+            workspace_ref=workspace_record.path or "",
+            workspace_id=workspace_record.workspace_id or "",
+            workspace_mode=workspace_record.lineage_type.value,
+            parent_attempt_id=prior_attempts[-1].attempt_id if prior_attempts else "",
+            derived_from_attempt_ids=[a.attempt_id for a in prior_attempts[-1:]],
+            started_at=attempt_started,
+            finished_at=time.time(),
+            blockers=task_blockers,
+            error=first_failure_packet.error_message or "",
+            failure_packet_ref=str(packet_path),
+            result_evidence_refs=[str(manifest_path)],
+            attempt_type=attempt_type.value,
+            metadata={
+                "criteria_results": [],
+                "attempt_type": attempt_type.value,
+                "workspace": workspace_record.to_dict(),
+                "environment": env_meta,
+                "review_required": task.get("review_required", False),
+            },
+        )
+        store.write_attempt(attempt_record)
+        return {"attempt_record": attempt_record, "criteria_results": [], "failure_packet": first_failure_packet}
 
     for crit in criteria:
         crit_id = crit.get("criterion_id", "")
@@ -502,6 +566,7 @@ def _run_attempt(
                 "attempt_id": attempt_id,
                 "workspace_path": workspace_record.path,
                 "workspace_mode": workspace_record.lineage_type.value,
+                "environment": workspace_record.metadata.get("environment", {}),
             },
         )
 
@@ -794,7 +859,7 @@ def _resolve_review_decision(
         rejection_type = "superficial_fix"
 
     failure_packet = FailureEvidencePacket(
-        failure_class=FailureClass.VALIDATION_FAILURE,
+        failure_class=FailureClass.RETRYABLE,
         attempt_id=review_attempt.attempt_id,
         task_id=task["task_id"],
         criterion="review_gate",
@@ -834,7 +899,7 @@ def _classify_failure(
     artifact_paths = artifact_paths or []
     structured = _load_contract_artifact(artifact_paths, "failure")
     provisional = FailureEvidencePacket(
-        failure_class=FailureClass.VALIDATION_FAILURE,
+        failure_class=FailureClass.RETRYABLE,
         attempt_id=attempt_id,
         task_id=task_id,
         criterion=criterion_id,
@@ -848,33 +913,69 @@ def _classify_failure(
     repeated = [
         a for a in prior_attempts
         if getattr(a, "failure_evidence", None)
-        and a.failure_evidence.signature == provisional.signature
+        and _same_failure_shape(a.failure_evidence, provisional)
     ]
-    if isinstance(structured, dict) and structured.get("failure_class") in {c.value for c in FailureClass}:
-        failure_class = FailureClass(structured["failure_class"])
+    hints: list[str] = []
+    repeated_failure = bool(repeated)
+    external_input_required = False
+    if isinstance(structured, dict):
+        failure_class = _normalize_failure_class(structured.get("failure_class"), default=FailureClass.RETRYABLE)
         root_cause = structured.get("root_cause_hypothesis")
         human_summary = structured.get("human_summary", "")
         machine_action = structured.get("machine_action", failure_class.value)
-    elif build_target_exists is False:
-        failure_class = FailureClass.VALIDATION_FAILURE
-        root_cause = "missing_build_target"
-        human_summary = f"validation_failure; criterion={criterion_id}; build_target missing"
-        machine_action = failure_class.value
-    elif adapter_status in {AdapterStatus.TIMED_OUT, AdapterStatus.KILLED}:
-        failure_class = FailureClass.ENVIRONMENT_BLOCK
-        root_cause = "executor_interrupted"
-        human_summary = f"environment_block; criterion={criterion_id}; adapter_status={adapter_status.value}"
-        machine_action = failure_class.value
+        hints = [str(h) for h in structured.get("hints", [])]
+        repeated_failure = structured.get("repeated_failure", repeated_failure)
+        external_input_required = structured.get("external_input_required", False)
     elif repeated:
-        failure_class = FailureClass.LOOP_DETECTED
+        failure_class = FailureClass.STUCK_OR_REPEATING
         root_cause = "repeated_failure_signature"
-        human_summary = f"loop_detected; criterion={criterion_id}; repeated failing command"
+        human_summary = f"stuck_or_repeating; criterion={criterion_id}; repeated failing command"
         machine_action = failure_class.value
+        hints = ["repeat_hint"]
+    elif adapter_status in {AdapterStatus.TIMED_OUT, AdapterStatus.KILLED}:
+        failure_class = FailureClass.RETRYABLE
+        root_cause = "executor_interrupted"
+        human_summary = f"retryable; criterion={criterion_id}; adapter_status={adapter_status.value}"
+        machine_action = failure_class.value
+        hints = ["environment_hint"]
+    elif build_target_exists is False:
+        failure_class = FailureClass.RETRYABLE
+        root_cause = "missing_build_target"
+        human_summary = f"retryable; criterion={criterion_id}; build_target missing"
+        machine_action = failure_class.value
+        hints = ["test_failure_hint"]
+    elif _looks_like_missing_dependency(error):
+        failure_class = FailureClass.RETRYABLE
+        root_cause = "dependency_or_project_package_missing"
+        human_summary = f"retryable; criterion={criterion_id}; dependency missing"
+        machine_action = failure_class.value
+        hints = ["dependency_hint", "tooling_hint"]
+    elif _looks_like_environment_block(error):
+        failure_class = FailureClass.RETRYABLE
+        root_cause = "toolchain_or_runtime_unavailable"
+        human_summary = f"retryable; criterion={criterion_id}; toolchain unavailable"
+        machine_action = failure_class.value
+        hints = ["environment_hint", "tooling_hint"]
+    elif _looks_like_user_input_needed(error):
+        user_input_requirement = _classify_user_input_requirement(error)
+        failure_class = FailureClass.NEEDS_USER_INPUT
+        root_cause = user_input_requirement["root_cause_hypothesis"]
+        human_summary = user_input_requirement["human_summary"] or f"needs_user_input; criterion={criterion_id}"
+        machine_action = failure_class.value
+        hints = list(user_input_requirement["hints"])
+        external_input_required = True
+    elif _looks_like_terminal_nonrecoverable(error):
+        failure_class = FailureClass.TERMINAL_NONRECOVERABLE
+        root_cause = "scope_or_access_terminal_block"
+        human_summary = f"terminal_nonrecoverable; criterion={criterion_id}"
+        machine_action = failure_class.value
+        hints = ["tooling_hint"]
     else:
-        failure_class = FailureClass.VALIDATION_FAILURE
+        failure_class = FailureClass.RETRYABLE
         root_cause = "criteria_not_satisfied"
-        human_summary = f"validation_failure; criterion={criterion_id}"
+        human_summary = f"retryable; criterion={criterion_id}"
         machine_action = failure_class.value
+        hints = ["test_failure_hint"]
     return FailureEvidencePacket(
         failure_class=failure_class,
         attempt_id=attempt_id,
@@ -889,8 +990,164 @@ def _classify_failure(
         failing_command=cmd,
         missing_artifacts=[build_target] if build_target_exists is False and build_target else [],
         recent_lane=attempt_type.value,
-        metadata={"adapter_status": adapter_status.value, "structured_failure": structured or {}},
+        hints=hints,
+        repeated_failure=repeated_failure,
+        external_input_required=external_input_required,
+        metadata={
+            "adapter_status": adapter_status.value,
+            "structured_failure": structured or {},
+            **({"required_user_input": user_input_requirement} if 'user_input_requirement' in locals() else {}),
+        },
     )
+
+
+def _same_failure_shape(previous: FailureEvidencePacket, current: FailureEvidencePacket) -> bool:
+    return (
+        previous.criterion == current.criterion
+        and previous.failing_command == current.failing_command
+        and sorted(previous.missing_artifacts) == sorted(current.missing_artifacts)
+        and previous.recent_lane == current.recent_lane
+    )
+
+
+def _normalize_failure_class(raw: str | None, *, default: FailureClass) -> FailureClass:
+    legacy_map = {
+        "ambiguity_block": FailureClass.NEEDS_USER_INPUT,
+        "missing_dependency": FailureClass.RETRYABLE,
+        "environment_block": FailureClass.RETRYABLE,
+        "architecture_mismatch": FailureClass.NEEDS_USER_INPUT,
+        "model_limitation": FailureClass.STUCK_OR_REPEATING,
+        "validation_failure": FailureClass.RETRYABLE,
+        "integration_conflict": FailureClass.RETRYABLE,
+        "loop_detected": FailureClass.STUCK_OR_REPEATING,
+    }
+    if raw in {c.value for c in FailureClass}:
+        return FailureClass(raw)
+    if raw in legacy_map:
+        return legacy_map[raw]
+    return default
+
+
+def _looks_like_missing_dependency(error: str) -> bool:
+    text = (error or "").lower()
+    markers = [
+        "no module named",
+        "cannot find module",
+        "module not found",
+        "could not resolve",
+        "missing script",
+        "package.json not found",
+        "requirements.txt",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _looks_like_environment_block(error: str) -> bool:
+    text = (error or "").lower()
+    markers = [
+        "command not found",
+        "executable file not found",
+        "no such file or directory",
+        "uv: command not found",
+        "npm: command not found",
+        "node: command not found",
+        "python: command not found",
+        "pytest: command not found",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _looks_like_user_input_needed(error: str) -> bool:
+    text = (error or "").lower()
+    markers = [
+        "approval required",
+        "user confirmation required",
+        "provide credential",
+        "missing api key",
+        "missing token",
+        "choose one of",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _classify_user_input_requirement(error: str) -> dict[str, object]:
+    text = (error or "").strip()
+    lower = text.lower()
+
+    def _extract(patterns: list[str]) -> str | None:
+        import re
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return next((group for group in match.groups() if group), None)
+        return None
+
+    secret_target = _extract([
+        r"missing api key(?: for)?[ :]+([A-Za-z0-9_./:-]+)",
+        r"missing token(?: for)?[ :]+([A-Za-z0-9_./:-]+)",
+        r"provide credential(?: for)?[ :]+([A-Za-z0-9_./:-]+)",
+        r"missing credential(?: for)?[ :]+([A-Za-z0-9_./:-]+)",
+    ])
+    approval_target = _extract([
+        r"approval required(?: for)?[ :]+([^.;\n]+)",
+        r"user confirmation required(?: for)?[ :]+([^.;\n]+)",
+    ])
+    choice_target = _extract([r"choose one of[ :]+([^.;\n]+)"])
+
+    if any(token in lower for token in ["missing api key", "missing token", "provide credential", "missing credential"]):
+        target = secret_target or "missing secret"
+        return {
+            "type": "credential_required",
+            "target": target,
+            "source": "error_message",
+            "hints": ["credential_hint"],
+            "root_cause_hypothesis": "missing_credential_or_secret",
+            "human_summary": f"needs_user_input; credential required: {target}",
+        }
+
+    if any(token in lower for token in ["approval required", "user confirmation required"]):
+        target = approval_target or "approval"
+        return {
+            "type": "approval_required",
+            "target": target,
+            "source": "error_message",
+            "hints": ["approval_hint"],
+            "root_cause_hypothesis": "explicit_approval_required",
+            "human_summary": f"needs_user_input; approval required: {target}",
+        }
+
+    if "choose one of" in lower:
+        target = choice_target or "human decision"
+        return {
+            "type": "clarification_needed",
+            "target": target,
+            "source": "error_message",
+            "hints": ["ambiguity_hint"],
+            "root_cause_hypothesis": "ambiguous_user_decision_required",
+            "human_summary": f"needs_user_input; clarification required: {target}",
+        }
+
+    return {
+        "type": "user_input_required",
+        "target": None,
+        "source": "error_message",
+        "hints": ["ambiguity_hint"],
+        "root_cause_hypothesis": "human_input_required",
+        "human_summary": "needs_user_input; targeted input required",
+    }
+
+
+def _looks_like_terminal_nonrecoverable(error: str) -> bool:
+    text = (error or "").lower()
+    markers = [
+        "out of scope",
+        "permission denied permanently",
+        "repository unavailable",
+        "access denied",
+        "unsupported platform",
+        "hard dependency unavailable",
+    ]
+    return any(marker in text for marker in markers)
 
 
 def _terminate(

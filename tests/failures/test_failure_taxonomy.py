@@ -1,47 +1,31 @@
-"""Phase 1 validation: Failure taxonomy tests.
-
-Validation matrix requirements:
-- Table-driven: concrete failures map to exact next actions
-- Unknown failure kind routes to safe fallback
-- Budget semantics: environment/dependency don't consume retry budget
-- Every supported failure class has one deterministic next action
-"""
+"""Tests for the thin v6.1 failure taxonomy."""
 
 import pytest
 
 from crucible.failures.taxonomy import (
-    FailureClass, NextAction, classify_failure, get_next_action,
-    consumes_retry_budget, FailureClassification,
+    FailureClass, FailureClassification, NextAction, classify_failure,
+    consumes_retry_budget, get_next_action,
 )
 
 
 class TestDeterministicMapping:
-    """Every failure class must map to exactly one next action."""
-
     @pytest.mark.parametrize("failure_class,expected_action", [
-        (FailureClass.AMBIGUITY_BLOCK, NextAction.ASK_USER),
-        (FailureClass.ENVIRONMENT_BLOCK, NextAction.FIX_ENVIRONMENT),
-        (FailureClass.MISSING_DEPENDENCY, NextAction.REQUEST_DEPENDENCY),
-        (FailureClass.ARCHITECTURE_MISMATCH, NextAction.PROPOSE_REVISION),
-        (FailureClass.MODEL_LIMITATION, NextAction.CHANGE_ROLE_MODEL_BACKEND),
-        (FailureClass.VALIDATION_FAILURE, NextAction.REPAIR_FROM_EVIDENCE),
-        (FailureClass.INTEGRATION_CONFLICT, NextAction.ROUTE_TO_INTEGRATOR),
-        (FailureClass.LOOP_DETECTED, NextAction.TRIP_CIRCUIT_BREAKER),
+        (FailureClass.RETRYABLE, NextAction.CONTINUE_AUTONOMOUSLY),
+        (FailureClass.NEEDS_USER_INPUT, NextAction.ASK_USER),
+        (FailureClass.STUCK_OR_REPEATING, NextAction.FORCE_STRATEGY_SHIFT),
+        (FailureClass.TERMINAL_NONRECOVERABLE, NextAction.STOP_WITH_EVIDENCE),
     ])
     def test_failure_to_action_mapping(self, failure_class, expected_action):
         result = classify_failure(failure_class)
         assert result.next_action == expected_action
 
     def test_all_failure_classes_have_mapping(self):
-        """Every FailureClass enum value must produce a non-fallback action."""
         for fc in FailureClass:
             action = get_next_action(fc)
             assert action != NextAction.SAFE_FALLBACK, f"{fc} has no defined action"
 
 
 class TestUnknownFailure:
-    """Unknown failure kinds must route to safe fallback."""
-
     def test_unknown_string_routes_to_fallback(self):
         result = classify_failure("totally_unknown_failure")
         assert result.next_action == NextAction.SAFE_FALLBACK
@@ -57,44 +41,34 @@ class TestUnknownFailure:
 
 
 class TestBudgetSemantics:
-    """Environment and missing-dependency failures should NOT consume retry budget."""
-
-    def test_environment_block_no_budget(self):
-        assert not consumes_retry_budget(FailureClass.ENVIRONMENT_BLOCK)
-
-    def test_missing_dependency_no_budget(self):
-        assert not consumes_retry_budget(FailureClass.MISSING_DEPENDENCY)
+    def test_needs_user_input_does_not_consume_retry_budget(self):
+        assert not consumes_retry_budget(FailureClass.NEEDS_USER_INPUT)
 
     @pytest.mark.parametrize("failure_class", [
-        FailureClass.AMBIGUITY_BLOCK,
-        FailureClass.ARCHITECTURE_MISMATCH,
-        FailureClass.MODEL_LIMITATION,
-        FailureClass.VALIDATION_FAILURE,
-        FailureClass.INTEGRATION_CONFLICT,
-        FailureClass.LOOP_DETECTED,
+        FailureClass.RETRYABLE,
+        FailureClass.STUCK_OR_REPEATING,
+        FailureClass.TERMINAL_NONRECOVERABLE,
     ])
     def test_other_failures_consume_budget(self, failure_class):
         assert consumes_retry_budget(failure_class)
 
 
 class TestClassifyFailureOutput:
-    """classify_failure should return complete, correct FailureClassification."""
-
     def test_returns_description_and_evidence(self):
         result = classify_failure(
-            FailureClass.VALIDATION_FAILURE,
+            FailureClass.RETRYABLE,
             description="Tests failed",
             evidence="3/10 tests red",
         )
         assert result.description == "Tests failed"
         assert result.evidence == "3/10 tests red"
-        assert result.failure_class == FailureClass.VALIDATION_FAILURE
+        assert result.failure_class == FailureClass.RETRYABLE
 
     def test_string_input_for_known_class(self):
-        result = classify_failure("ambiguity_block")
-        assert result.failure_class == FailureClass.AMBIGUITY_BLOCK
+        result = classify_failure("needs_user_input")
+        assert result.failure_class == FailureClass.NEEDS_USER_INPUT
         assert result.next_action == NextAction.ASK_USER
 
     def test_enum_input(self):
-        result = classify_failure(FailureClass.LOOP_DETECTED)
-        assert result.next_action == NextAction.TRIP_CIRCUIT_BREAKER
+        result = classify_failure(FailureClass.STUCK_OR_REPEATING)
+        assert result.next_action == NextAction.FORCE_STRATEGY_SHIFT

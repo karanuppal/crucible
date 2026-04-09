@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from crucible.failures.evidence_packet import FailureEvidencePacket
+from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
 from crucible.failures.next_action_selector import NextActionSelector
 from crucible.policy.budgets import BudgetPolicy
 from crucible.policy.budget_tracker import BudgetTracker
@@ -49,6 +49,7 @@ class AttemptRecord:
     failure_evidence: Optional[FailureEvidencePacket] = None
     review_result: Optional[dict] = None
     output: Optional[dict] = None
+    budget_key_used: Optional[str] = None
 
 
 @dataclass
@@ -290,6 +291,10 @@ class ClosedLoopExecutor:
         )
         
         # Handle decision
+        if decision.terminal:
+            ctx.status = TaskStatus.BLOCKED
+            return ctx
+
         if decision.requires_user_input:
             ctx.status = TaskStatus.AWAITING_USER
             return ctx
@@ -333,6 +338,7 @@ class ClosedLoopExecutor:
             attempt_type=AttemptType.REPAIR,
             state=AttemptState.RUNNING,
             workspace_record=workspace,
+            budget_key_used="repair_attempt_budget",
         )
         
         ctx.attempts.append(attempt)
@@ -343,11 +349,12 @@ class ClosedLoopExecutor:
     
     def _start_debug(self, ctx: TaskContext) -> TaskContext:
         """Start a debug attempt."""
-        if not ctx.budget_tracker.can_attempt(AttemptType.DEBUG):
+        budget_key = self._debug_budget_key(ctx)
+        if not ctx.budget_tracker.can_attempt_budget(budget_key):
             ctx.status = TaskStatus.BLOCKED
             return ctx
         
-        ctx.budget_tracker.consume(AttemptType.DEBUG, "debug attempt")
+        ctx.budget_tracker.consume_budget(budget_key, "debug attempt")
         
         workspace = self._determine_workspace(ctx)
         
@@ -356,6 +363,7 @@ class ClosedLoopExecutor:
             attempt_type=AttemptType.DEBUG,
             state=AttemptState.RUNNING,
             workspace_record=workspace,
+            budget_key_used=budget_key,
         )
         
         ctx.attempts.append(attempt)
@@ -364,6 +372,13 @@ class ClosedLoopExecutor:
         
         return ctx
     
+    def _debug_budget_key(self, ctx: TaskContext) -> str:
+        """Use deep recovery budget when policy has escalated a repeated/stuck failure."""
+        failure = ctx.current_attempt.failure_evidence if ctx.current_attempt else None
+        if failure and (failure.failure_class == FailureClass.STUCK_OR_REPEATING or failure.repeated_failure):
+            return "deep_recovery_budget"
+        return "debug_attempt_budget"
+
     def _start_review(self, ctx: TaskContext) -> TaskContext:
         """Start a review attempt and consume review-rejection budget."""
         if not ctx.budget_tracker.can_attempt(AttemptType.REVIEW):

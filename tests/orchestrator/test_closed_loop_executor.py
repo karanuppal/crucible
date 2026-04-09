@@ -101,7 +101,7 @@ class TestClosedLoopExecutor:
         ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
         from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
         ctx.current_attempt.failure_evidence = FailureEvidencePacket(
-            failure_class=FailureClass.VALIDATION_FAILURE,
+            failure_class=FailureClass.RETRYABLE,
             attempt_id=ctx.current_attempt.attempt_id,
             criterion="test",
         )
@@ -110,6 +110,56 @@ class TestClosedLoopExecutor:
         
         # Should route to repairing
         assert ctx.status == TaskStatus.REPAIRING
+
+    def test_needs_user_input_pauses_without_scheduling_next_attempt(self):
+        executor = ClosedLoopExecutor()
+        ctx = TaskContext(task_id="task-1", spec="Implement X", criteria=["criterion1"])
+        ctx = executor._start_build(ctx)
+
+        from crucible.policy.circuit_breaker import CircuitBreaker
+        from crucible.runner.non_identical_rule import NonIdenticalRetryRule
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+
+        ctx.circuit_breaker = CircuitBreaker(executor.circuit_config)
+        ctx.non_identical_rule = NonIdenticalRetryRule()
+        failed_attempt = ctx.current_attempt
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.NEEDS_USER_INPUT,
+            attempt_id=ctx.current_attempt.attempt_id,
+        )
+
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+
+        assert ctx.status == TaskStatus.AWAITING_USER
+        assert ctx.current_attempt is failed_attempt
+        assert len(ctx.attempts) == 1
+        assert ctx.current_attempt.attempt_type == AttemptType.BUILD
+
+    def test_terminal_nonrecoverable_stops_without_scheduling_next_attempt(self):
+        executor = ClosedLoopExecutor()
+        ctx = TaskContext(task_id="task-1", spec="Implement X", criteria=["criterion1"])
+        ctx = executor._start_build(ctx)
+
+        from crucible.policy.circuit_breaker import CircuitBreaker
+        from crucible.runner.non_identical_rule import NonIdenticalRetryRule
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+
+        ctx.circuit_breaker = CircuitBreaker(executor.circuit_config)
+        ctx.non_identical_rule = NonIdenticalRetryRule()
+        failed_attempt = ctx.current_attempt
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.TERMINAL_NONRECOVERABLE,
+            attempt_id=ctx.current_attempt.attempt_id,
+        )
+
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+
+        assert ctx.status == TaskStatus.BLOCKED
+        assert ctx.current_attempt is failed_attempt
+        assert len(ctx.attempts) == 1
+        assert ctx.current_attempt.attempt_type == AttemptType.BUILD
     
     def test_task_blocks_when_budget_exhausted(self):
         """Task blocks when budget exhausted."""
@@ -232,32 +282,122 @@ class TestClosedLoopExecutor:
     def test_task_routes_to_debug_on_loop_detected(self):
         """Task routes to debug when loop detected."""
         executor = ClosedLoopExecutor()
-        
+
         ctx = TaskContext(
             task_id="task-1",
             spec="Implement X",
             criteria=["criterion1"],
         )
-        
+
         # Initialize tracking
         from crucible.policy.circuit_breaker import CircuitBreaker
         from crucible.runner.non_identical_rule import NonIdenticalRetryRule
         ctx.budget_tracker = executor._start_build(ctx).budget_tracker
         ctx.non_identical_rule = NonIdenticalRetryRule()
         ctx.circuit_breaker = CircuitBreaker(executor.circuit_config)
-        
+
         # Start build
         ctx = executor._start_build(ctx)
-        
+
         # Simulate loop detected failure
         from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
         ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
         ctx.current_attempt.failure_evidence = FailureEvidencePacket(
-            failure_class=FailureClass.LOOP_DETECTED,
+            failure_class=FailureClass.STUCK_OR_REPEATING,
             attempt_id=ctx.current_attempt.attempt_id,
         )
-        
+
         ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
-        
+
         # Should route to debugging
         assert ctx.status == TaskStatus.DEBUGGING
+
+    def test_stuck_or_repeating_consumes_deep_recovery_budget(self):
+        executor = ClosedLoopExecutor(
+            budget_policy=BudgetPolicy(debug_attempt_budget=4, deep_recovery_budget=1)
+        )
+        ctx = executor.initialize_task(
+            TaskContext(task_id="task-1", spec="Implement X", criteria=["criterion1"])
+        )
+        ctx = executor._start_build(ctx)
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.STUCK_OR_REPEATING,
+            attempt_id=ctx.current_attempt.attempt_id,
+            repeated_failure=True,
+        )
+
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+
+        assert ctx.status == TaskStatus.DEBUGGING
+        assert ctx.current_attempt is not None
+        assert ctx.current_attempt.attempt_type == AttemptType.DEBUG
+        assert ctx.current_attempt.budget_key_used == "deep_recovery_budget"
+        assert ctx.budget_tracker.get_remaining_for_key("deep_recovery_budget") == 0
+        assert ctx.budget_tracker.get_remaining_for_key("debug_attempt_budget") == 4
+
+    def test_stuck_or_repeating_blocks_when_only_deep_recovery_budget_is_exhausted(self):
+        executor = ClosedLoopExecutor(
+            budget_policy=BudgetPolicy(debug_attempt_budget=4, deep_recovery_budget=0)
+        )
+        ctx = executor.initialize_task(
+            TaskContext(task_id="task-1", spec="Implement X", criteria=["criterion1"])
+        )
+        ctx = executor._start_build(ctx)
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.STUCK_OR_REPEATING,
+            attempt_id=ctx.current_attempt.attempt_id,
+            repeated_failure=True,
+        )
+
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+
+        assert ctx.status == TaskStatus.BLOCKED
+        assert ctx.budget_tracker.get_remaining_for_key("debug_attempt_budget") == 4
+    def test_stuck_or_repeating_debug_consumes_deep_recovery_budget(self):
+        executor = ClosedLoopExecutor(budget_policy=BudgetPolicy(debug_attempt_budget=1, deep_recovery_budget=2))
+        ctx = executor.initialize_task(TaskContext(task_id="task-2", spec="Implement X", criteria=["criterion1"]))
+        ctx = executor._start_build(ctx)
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.STUCK_OR_REPEATING,
+            attempt_id=ctx.current_attempt.attempt_id,
+            repeated_failure=True,
+        )
+
+        before = ctx.budget_tracker.get_all_remaining()
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+        after = ctx.budget_tracker.get_all_remaining()
+
+        assert ctx.status == TaskStatus.DEBUGGING
+        assert ctx.current_attempt.budget_key_used == "deep_recovery_budget"
+        assert after["deep_recovery_budget"] == before["deep_recovery_budget"] - 1
+        assert after["debug_attempt_budget"] == before["debug_attempt_budget"]
+
+    def test_non_repeated_debug_still_consumes_debug_budget(self):
+        executor = ClosedLoopExecutor(budget_policy=BudgetPolicy(debug_attempt_budget=2, deep_recovery_budget=2))
+        ctx = executor.initialize_task(TaskContext(task_id="task-3", spec="Implement X", criteria=["criterion1"]))
+        ctx = executor._start_build(ctx)
+        ctx.current_attempt.state = AttemptState.VALIDATED_FAIL
+
+        from crucible.failures.evidence_packet import FailureClass, FailureEvidencePacket
+        ctx.current_attempt.failure_evidence = FailureEvidencePacket(
+            failure_class=FailureClass.RETRYABLE,
+            attempt_id=ctx.current_attempt.attempt_id,
+            root_cause_hypothesis="unknown",
+            prior_attempts=["attempt-0", "attempt-1"],
+        )
+
+        before = ctx.budget_tracker.get_all_remaining()
+        ctx = executor._handle_validation_fail(ctx, ctx.current_attempt)
+        after = ctx.budget_tracker.get_all_remaining()
+
+        assert ctx.status == TaskStatus.DEBUGGING
+        assert ctx.current_attempt.budget_key_used == "debug_attempt_budget"
+        assert after["debug_attempt_budget"] == before["debug_attempt_budget"] - 1
+        assert after["deep_recovery_budget"] == before["deep_recovery_budget"]
