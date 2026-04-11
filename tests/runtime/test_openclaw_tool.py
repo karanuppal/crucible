@@ -101,6 +101,8 @@ class TestRunMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["terminal_status"] == "complete"
+        assert out["plan_status"] == "validated"
+        assert out["plan"]["tasks"][0]["review_policy"]["tier"] == "standard"
         assert "t1" in out["completed_tasks"]
     
     def test_run_failing_returns_terminal_failed(self, tmp_path):
@@ -149,6 +151,8 @@ class TestStatusMode:
         assert out["run_id"] == run_id
         assert out["phase"] == "done"
         assert out["is_terminal"] is True
+        assert out["plan_present"] is True
+        assert out["plan_status"] == "validated"
         assert out["terminal_status"] == "complete"
     
     def test_status_unknown_returns_error(self, tmp_path):
@@ -177,6 +181,7 @@ class TestWatchMode:
         # Each event has event_id and type
         assert "event_id" in out["events"][0]
         assert "type" in out["events"][0]
+        assert any(event["type"] == "plan_validated" for event in out["events"])
     
     def test_watch_unknown_returns_error(self, tmp_path):
         out = execute({
@@ -195,6 +200,7 @@ class TestResumeMode:
         
         out = execute({"mode": "resume", "run_id": run_id, "runs_dir": runs_dir})
         assert out["status"] == "ok"
+        assert out["plan_status"] == "validated"
         assert out["terminal_status"] == "complete"
     
     def test_run_can_use_openclaw_bridge_backend(self, tmp_path):
@@ -340,3 +346,15 @@ class TestResumeMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["exit_code"] == 4
+
+    def test_resume_rejects_missing_durable_plan(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        run_out = execute({"mode": "run", "plan": _good_plan(), "runs_dir": runs_dir})
+        run_root = run_out["run_root"]
+        os.unlink(os.path.join(run_root, "result.json"))
+        os.unlink(os.path.join(run_root, "plan.json"))
+
+        out = execute({"mode": "resume", "run_id": run_out["run_id"], "runs_dir": runs_dir})
+        assert out["status"] == "error"
+        assert out["exit_code"] == 5
+        assert "durable plan.json" in out["message"]

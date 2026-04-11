@@ -24,6 +24,12 @@ import os
 import sys
 from typing import Any
 
+from crucible.planning import (
+    PlanningError,
+    build_plan_artifact,
+    detect_ambiguity,
+    ensure_validated_plan,
+)
 from crucible.runtime.preflight import lint_plan, LintResult
 from crucible.runtime.run_store import (
     RunStore, RunSummary, create_run_store, load_run_store, default_runs_root,
@@ -124,23 +130,66 @@ def cmd_run(args: argparse.Namespace) -> int:
     
     # Create run store
     runs_root = args.runs_dir or default_runs_root()
+    embedding_surface = args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", "")
+    embedding_session_ref = os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", "")
     store, manifest = create_run_store(
         run_id=None,
         project_id=normalized["project_id"],
         build_id=normalized["build_id"],
         spec_text=normalized.get("spec", ""),
         task_plan=normalized,
-        embedding_surface=args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", ""),
-        embedding_session_ref=os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", ""),
+        embedding_surface=embedding_surface,
+        embedding_session_ref=embedding_session_ref,
         runs_root=runs_root,
         workspace_root=workspace_root,
     )
+
+    ambiguity = detect_ambiguity(normalized)
+    if ambiguity.should_escalate:
+        store.append_event("run_escalated", payload={"ambiguity": ambiguity.to_dict()})
+        manifest.current_phase = "planning"
+        manifest.current_status = "escalated"
+        store.write_manifest(manifest)
+        if args.jsonl:
+            _emit_jsonl({"event": "ambiguity_detected", "run_id": manifest.run_id, "ambiguity": ambiguity.to_dict()})
+        else:
+            print("ambiguity_detected: true")
+            print(f"ambiguity_reasons: {ambiguity.reasons}")
+        return 3
+
+    try:
+        durable_plan = build_plan_artifact(
+            run_id=manifest.run_id,
+            submitted_plan=normalized,
+            embedding_surface=embedding_surface,
+            embedding_session_ref=embedding_session_ref,
+        )
+    except PlanningError as e:
+        store.append_event("plan_invalid", payload={"error": str(e)})
+        manifest.current_phase = "planning"
+        manifest.current_status = "failed"
+        store.write_manifest(manifest)
+        if args.jsonl:
+            _emit_jsonl({"event": "plan_invalid", "run_id": manifest.run_id, "error": str(e)})
+        else:
+            sys.stderr.write(f"plan invalid: {e}\n")
+        return 2
+
+    store.write_plan(durable_plan)
+    store.append_event("plan_validated", payload={"plan_ref": store.plan_path, "plan_status": durable_plan["status"]})
+    manifest = store.read_manifest() or manifest
     
     if args.jsonl:
         _emit_jsonl({
             "event": "run_started",
             "run_id": manifest.run_id,
             "run_root": manifest.run_root,
+        })
+        _emit_jsonl({
+            "event": "plan_validated",
+            "run_id": manifest.run_id,
+            "plan_status": durable_plan["status"],
+            "plan_path": store.plan_path,
         })
     else:
         print(f"run_id: {manifest.run_id}")
@@ -188,6 +237,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 5
     
     try:
+        ensure_validated_plan(store.read_plan())
         summary = execute_run(
             store=store,
             manifest=manifest,
@@ -221,10 +271,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     result = store.read_result()
     events = store.read_events()
     attempts = store.list_attempts()
+    durable_plan = store.read_plan()
     
     snapshot = {
         "manifest": manifest.to_dict() if manifest else None,
         "result": result,
+        "plan": durable_plan,
+        "plan_present": durable_plan is not None,
+        "plan_status": (durable_plan or {}).get("status") or (manifest.plan_status if manifest else "missing"),
+        "plan_path": store.plan_path,
         "event_count": len(events),
         "last_events": [e.to_dict() for e in events[-5:]],
         "attempts": [a.to_dict() for a in attempts],
@@ -240,6 +295,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"status: {manifest.current_status}")
             print(f"events: {len(events)}")
             print(f"attempts: {len(attempts)}")
+            print(f"plan_present: {durable_plan is not None}")
+            print(f"plan_status: {(durable_plan or {}).get('status') or manifest.plan_status}")
+            print(f"plan_path: {store.plan_path}")
             if result:
                 print(f"terminal_status: {result.get('terminal_status')}")
                 print(f"completed: {result.get('completed_tasks')}")
@@ -342,6 +400,12 @@ def cmd_resume(args: argparse.Namespace) -> int:
         sys.stderr.write(f"run {args.run_id} is missing plan or manifest\n")
         store.release_lock()
         return 5
+    try:
+        durable_plan = ensure_validated_plan(store.read_plan())
+    except PlanningError as e:
+        sys.stderr.write(f"run {args.run_id} has invalid or missing durable plan.json: {e}\n")
+        store.release_lock()
+        return 5
     
     from crucible.runtime.local_shell_adapter import LocalShellAdapter
     
@@ -408,11 +472,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
             "event": "resumed",
             "run_id": args.run_id,
             "reconciled": [a.attempt_id for a in flagged],
+            "plan_status": durable_plan.get("status", "missing"),
+            "plan_path": store.plan_path,
             "summary": summary.to_dict(),
         })
     else:
         print(f"resumed run {args.run_id}")
         print(f"reconciled {len(flagged)} in-flight attempts")
+        print(f"plan_status: {durable_plan.get('status', 'missing')}")
+        print(f"plan_path: {store.plan_path}")
         print(f"terminal_status: {summary.terminal_status}")
     
     return 0 if summary.terminal_status == "complete" else 3

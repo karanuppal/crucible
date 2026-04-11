@@ -38,6 +38,13 @@ import tempfile
 import threading
 from typing import Any, Callable
 
+from crucible.planning import (
+    PlanningError,
+    build_plan_artifact,
+    detect_ambiguity,
+    ensure_validated_plan,
+)
+
 
 TOOL_NAME = "crucible"
 TOOL_VERSION = "0.2.0"
@@ -216,6 +223,8 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             }
 
         normalized = lint.normalized_plan or plan
+        embedding_surface = str(input_json.get("embedding_surface") or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", ""))
+        embedding_session_ref = str(input_json.get("embedding_session_ref") or os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", ""))
         workspace_root = _resolve_workspace_root(input_json)
         store, manifest = create_run_store(
             run_id=None,
@@ -223,15 +232,40 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             build_id=normalized["build_id"],
             spec_text=normalized.get("spec", ""),
             task_plan=normalized,
-            embedding_surface=str(input_json.get("embedding_surface") or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", "")),
-            embedding_session_ref=str(input_json.get("embedding_session_ref") or os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", "")),
+            embedding_surface=embedding_surface,
+            embedding_session_ref=embedding_session_ref,
             runs_root=runs_dir or default_runs_root(),
             workspace_root=workspace_root,
         )
 
+        ambiguity = detect_ambiguity(normalized)
+        if ambiguity.should_escalate:
+            store.append_event("run_escalated", payload={"ambiguity": ambiguity.to_dict()})
+            manifest.current_phase = "planning"
+            manifest.current_status = "escalated"
+            store.write_manifest(manifest)
+            return {
+                "status": "terminal",
+                "exit_code": 3,
+                "run_id": manifest.run_id,
+                "run_root": manifest.run_root,
+                "message": "ambiguity requires human clarification",
+                "ambiguity": ambiguity.to_dict(),
+            }
+
+        durable_plan = build_plan_artifact(
+            run_id=manifest.run_id,
+            submitted_plan=normalized,
+            embedding_surface=embedding_surface,
+            embedding_session_ref=embedding_session_ref,
+        )
+        store.write_plan(durable_plan)
+        store.append_event("plan_validated", payload={"plan_ref": store.plan_path, "plan_status": durable_plan["status"]})
+
         if input_json.get("detach"):
             def _runner() -> None:
                 try:
+                    ensure_validated_plan(store.read_plan())
                     execute_run(
                         store=store,
                         manifest=manifest,
@@ -262,6 +296,7 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
                 "message": "detached bridge-backed run started",
             }
 
+        ensure_validated_plan(store.read_plan())
         summary = execute_run(
             store=store,
             manifest=manifest,
@@ -276,6 +311,9 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             "run_root": manifest.run_root,
             "terminal_status": summary.terminal_status,
             "semantic_state": summary.terminal_status,
+            "plan_status": durable_plan["status"],
+            "plan_path": store.plan_path,
+            "plan": durable_plan,
             "completed_tasks": summary.completed_tasks,
             "failed_tasks": summary.failed_tasks,
             "partial_tasks": summary.partial_tasks,
@@ -334,6 +372,10 @@ def _do_status(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
         out["event_count"] = parsed.get("event_count", 0)
         out["attempts"] = parsed.get("attempts", [])
         out["is_terminal"] = parsed.get("is_terminal", False)
+        out["plan"] = parsed.get("plan")
+        out["plan_present"] = parsed.get("plan_present", False)
+        out["plan_status"] = parsed.get("plan_status", "missing")
+        out["plan_path"] = parsed.get("plan_path", "")
         out["semantic_state"] = _derive_semantic_state(out["current_status"], out["attempts"])
         if result:
             out["terminal_status"] = result.get("terminal_status", "")
@@ -409,6 +451,7 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
         try:
             if store.is_terminal():
                 result = store.read_result() or {}
+                durable_plan = store.read_plan()
                 out.update({
                     "status": "ok" if result.get("terminal_status") == "complete" else "terminal",
                     "exit_code": 0 if result.get("terminal_status") == "complete" else 3,
@@ -416,6 +459,9 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
                     "completed_tasks": result.get("completed_tasks", []),
                     "failed_tasks": result.get("failed_tasks", []),
                     "semantic_state": result.get("terminal_status", "complete"),
+                    "plan_status": (durable_plan or {}).get("status", "missing"),
+                    "plan_path": store.plan_path,
+                    "plan": durable_plan,
                 })
                 return out
 
@@ -424,6 +470,11 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             plan = store.read_tasks_snapshot()
             if plan is None:
                 out.update({"status": "error", "exit_code": 5, "message": f"run {run_id} is missing plan"})
+                return out
+            try:
+                durable_plan = ensure_validated_plan(store.read_plan())
+            except PlanningError as e:
+                out.update({"status": "error", "exit_code": 5, "message": f"run {run_id} has invalid or missing durable plan.json: {e}"})
                 return out
 
             cli_override = input_json.get("workspace_root")
@@ -474,6 +525,9 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
                 "partial_tasks": summary.partial_tasks,
                 "blocked_reason": summary.blocked_reason,
                 "semantic_state": summary.terminal_status,
+                "plan_status": durable_plan.get("status", "missing"),
+                "plan_path": store.plan_path,
+                "plan": durable_plan,
             })
             return out
         finally:
@@ -491,6 +545,8 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
     if rc == 4:
         out["message"] = f"unknown run_id: {run_id}"
         return out
+    if stderr.strip() and rc != 0:
+        out["message"] = stderr.strip().splitlines()[-1]
     
     # Round-8 fix: the wrapper docstring promises run_root is always present
     # after resume. Look it up directly from the run store rather than hoping
@@ -505,6 +561,12 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             if manifest:
                 out["workspace_root"] = manifest.workspace_root
                 out["embedding_session_ref"] = manifest.embedding_session_ref
+                out["plan_status"] = manifest.plan_status
+            durable_plan = store.read_plan()
+            if durable_plan is not None:
+                out["plan"] = durable_plan
+                out["plan_status"] = durable_plan.get("status", out.get("plan_status", "missing"))
+                out["plan_path"] = store.plan_path
     except Exception:
         # Best-effort; don't break the wrapper if introspection fails
         pass
@@ -523,6 +585,8 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             out["completed_tasks"] = summary.get("completed_tasks", [])
             out["failed_tasks"] = summary.get("failed_tasks", [])
             out["semantic_state"] = summary.get("terminal_status", "")
+            out["plan_status"] = obj.get("plan_status", out.get("plan_status", "missing"))
+            out["plan_path"] = obj.get("plan_path", out.get("plan_path", ""))
     if stderr:
         out["stderr"] = stderr.strip()
     return out
@@ -541,6 +605,14 @@ def _build_run_response(rc: int, stdout: str, stderr: str) -> dict[str, Any]:
                 out["run_root"] = obj["run_root"]
             if obj.get("pid"):
                 out["pid"] = obj["pid"]
+        elif event == "plan_validated":
+            out["plan_status"] = obj.get("plan_status", "")
+            out["plan_path"] = obj.get("plan_path", "")
+            if out.get("plan_path") and os.path.isfile(out["plan_path"]):
+                try:
+                    out["plan"] = json.loads(open(out["plan_path"]).read())
+                except Exception:
+                    pass
         elif event == "lint_failed":
             out["status"] = "lint_failed"
             out["findings"] = obj.get("result", {}).get("findings", [])

@@ -50,6 +50,8 @@ class RunManifest:
     embedding_session_ref: str = ""
     ledger_ref: str = ""
     workspace_root: str = ""
+    plan_ref: str = ""
+    plan_status: str = "missing"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -325,6 +327,10 @@ class RunStore:
     @property
     def tasks_path(self) -> str:
         return os.path.join(self._run_root, "tasks.json")
+
+    @property
+    def plan_path(self) -> str:
+        return os.path.join(self._run_root, "plan.json")
     
     @property
     def events_path(self) -> str:
@@ -396,6 +402,22 @@ class RunStore:
         with open(self.tasks_path) as f:
             return json.load(f)
     
+    # ─── Durable plan artifact ───
+
+    def write_plan(self, plan: dict[str, Any]) -> None:
+        _atomic_write_json(self.plan_path, plan)
+        manifest = self.read_manifest()
+        if manifest is not None:
+            manifest.plan_ref = self.plan_path
+            manifest.plan_status = str(plan.get("status") or "missing")
+            self.write_manifest(manifest)
+
+    def read_plan(self) -> dict[str, Any] | None:
+        if not os.path.isfile(self.plan_path):
+            return None
+        with open(self.plan_path) as f:
+            return json.load(f)
+
     # ─── Events ───
     
     def append_event(
@@ -614,9 +636,24 @@ def create_run_store(
         embedding_session_ref=embedding_session_ref,
         ledger_ref=ledger_ref,
         workspace_root=_canonicalize_workspace(workspace_root),
+        plan_ref=os.path.join(run_root, "plan.json"),
+        plan_status="missing",
     )
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)
+    if task_plan:
+        try:
+            from crucible.planning import build_plan_artifact
+
+            durable_plan = build_plan_artifact(
+                run_id=run_id,
+                submitted_plan=task_plan,
+                embedding_surface=embedding_surface,
+                embedding_session_ref=embedding_session_ref,
+            )
+            store.write_plan(durable_plan)
+        except Exception:
+            pass
     store.append_event("run_started", payload={"run_id": run_id, "project_id": project_id})
     return store, manifest
 

@@ -89,6 +89,20 @@ class TestRun:
         assert parsed["event"] == "run_started"
         assert "run_id" in parsed
 
+    def test_validated_plan_persisted_on_disk(self, tmp_path):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        rc = main(["--runs-dir", runs_dir, "run", plan_path])
+        assert rc == 0
+        run_id = os.listdir(runs_dir)[0]
+        plan_on_disk = json.loads((tmp_path / "runs" / run_id / "plan.json").read_text())
+        assert plan_on_disk["status"] == "validated"
+        task = plan_on_disk["tasks"][0]
+        assert "dependencies" in task
+        assert "acceptance_criteria" in task
+        assert "validation_policy" in task
+        assert "review_policy" in task
+
 
 class TestStatus:
     def test_unknown_run_id_exits_four(self, tmp_path):
@@ -105,6 +119,20 @@ class TestStatus:
         assert rc == 0
         out = capsys.readouterr().out
         assert run_id in out
+
+    def test_status_json_exposes_plan_state(self, tmp_path, capsys):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        main(["--runs-dir", runs_dir, "run", plan_path])
+        run_id = os.listdir(runs_dir)[0]
+        capsys.readouterr()
+
+        rc = main(["--runs-dir", runs_dir, "status", run_id, "--json"])
+        assert rc == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["plan_present"] is True
+        assert parsed["plan_status"] == "validated"
+        assert parsed["plan"]["run_id"] == run_id
 
 
 class TestWatch:
@@ -127,6 +155,7 @@ class TestWatch:
         assert len(lines) >= 1
         first = json.loads(lines[0])
         assert "event_id" in first
+        assert any(json.loads(line)["type"] == "plan_validated" for line in lines)
 
 
 class TestResume:
@@ -142,3 +171,14 @@ class TestResume:
         
         rc = main(["--runs-dir", runs_dir, "resume", run_id])
         assert rc == 0
+
+    def test_resume_rejects_missing_durable_plan(self, tmp_path):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        main(["--runs-dir", runs_dir, "run", plan_path])
+        run_id = os.listdir(runs_dir)[0]
+        os.unlink(tmp_path / "runs" / run_id / "result.json")
+        os.unlink(tmp_path / "runs" / run_id / "plan.json")
+
+        rc = main(["--runs-dir", runs_dir, "resume", run_id])
+        assert rc == 5
