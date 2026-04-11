@@ -412,6 +412,19 @@ def _do_watch(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any
         return out
     
     out["events"] = _parse_jsonl(stdout)
+    try:
+        from crucible.runtime.run_store import load_run_store, default_runs_root
+
+        store = load_run_store(str(run_id), runs_root=runs_dir or default_runs_root())
+        if store is not None:
+            manifest = store.read_manifest()
+            durable_plan = store.read_plan()
+            out["plan_present"] = durable_plan is not None
+            out["plan_status"] = (durable_plan or {}).get("status") or (manifest.plan_status if manifest else "missing")
+            out["plan_path"] = store.plan_path
+            out["plan"] = durable_plan
+    except Exception:
+        pass
     if stderr:
         out["stderr"] = stderr.strip()
     return out

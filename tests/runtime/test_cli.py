@@ -150,12 +150,43 @@ class TestWatch:
         rc = main(["--runs-dir", runs_dir, "watch", run_id, "--jsonl", "--from", "0"])
         assert rc == 0
         out = capsys.readouterr().out
-        # At least one JSON line
-        lines = [l for l in out.strip().split("\n") if l]
-        assert len(lines) >= 1
-        first = json.loads(lines[0])
-        assert "event_id" in first
-        assert any(json.loads(line)["type"] == "plan_validated" for line in lines)
+        lines = [json.loads(l) for l in out.strip().split("\n") if l]
+        assert len(lines) >= 2
+        assert lines[0]["event"] == "plan_state"
+        assert lines[0]["plan_present"] is True
+        assert lines[0]["plan_status"] == "validated"
+        assert any(line.get("type") == "plan_validated" for line in lines[1:])
+
+    def test_initial_execution_fails_closed_if_plan_deleted_before_execute(self, tmp_path):
+        from crucible.runtime.local_shell_adapter import LocalShellAdapter
+        from crucible.runtime.preflight import lint_plan
+        from crucible.runtime.run_executor import execute_run
+        from crucible.runtime.run_store import create_run_store
+
+        plan = json.loads(open(_good_plan_json(tmp_path)).read())
+        normalized = lint_plan(plan).normalized_plan or plan
+        store, manifest = create_run_store(
+            run_id=None,
+            project_id=normalized["project_id"],
+            build_id=normalized["build_id"],
+            spec_text=normalized.get("spec", ""),
+            task_plan=normalized,
+            runs_root=str(tmp_path / "runs"),
+            workspace_root=str(tmp_path / "workspace"),
+        )
+        os.unlink(os.path.join(store.run_root, "plan.json"))
+
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=normalized,
+            adapter_factory=lambda s: [LocalShellAdapter()],
+            workspace_root=str(tmp_path / "workspace"),
+        )
+
+        assert summary.terminal_status == "failed"
+        assert "validated plan required before execution" in summary.blocked_reason
+        assert any(event.type == "plan_gate_failed" for event in store.read_events())
 
 
 class TestResume:

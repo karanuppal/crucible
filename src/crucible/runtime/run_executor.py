@@ -28,6 +28,7 @@ from crucible.orchestrator.run_closure import RunClosure
 from crucible.policy.budget_tracker import BudgetTracker
 from crucible.policy.circuit_breaker import CircuitBreaker
 from crucible.runner.non_identical_rule import NonIdenticalRetryRule
+from crucible.planning import PlanningError, ensure_validated_plan
 from crucible.runtime.run_store import (
     CostSummary,
     RunManifest,
@@ -64,7 +65,21 @@ def execute_run(
     evidence_store = EvidenceStore(Path(store.run_root) / "evidence")
     workspace_manager = WorkspaceManager(Path(store.run_root) / "workspaces")
 
-    store.append_event("orchestrator_started", payload={"workspace_root": workspace_root, "run_mode": "closed_loop"})
+    try:
+        durable_plan = ensure_validated_plan(store.read_plan())
+    except PlanningError as e:
+        store.append_event("plan_gate_failed", payload={"error": str(e), "plan_path": store.plan_path})
+        return _terminate(store, manifest, "failed", start, blocked=f"validated plan required before execution: {e}")
+
+    store.append_event(
+        "orchestrator_started",
+        payload={
+            "workspace_root": workspace_root,
+            "run_mode": "closed_loop",
+            "plan_path": store.plan_path,
+            "plan_status": durable_plan.get("status", "missing"),
+        },
+    )
     store.update_manifest_status("execute", "running")
 
     try:

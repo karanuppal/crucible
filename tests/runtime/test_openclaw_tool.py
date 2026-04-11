@@ -5,6 +5,7 @@ import os
 import time
 import pytest
 
+from crucible.planning import PlanningError
 from crucible.runtime.preflight import lint_plan
 from crucible.runtime.run_store import create_run_store
 
@@ -178,10 +179,12 @@ class TestWatchMode:
         out = execute({"mode": "watch", "run_id": run_id, "runs_dir": runs_dir})
         assert isinstance(out["events"], list)
         assert len(out["events"]) > 0
-        # Each event has event_id and type
-        assert "event_id" in out["events"][0]
-        assert "type" in out["events"][0]
-        assert any(event["type"] == "plan_validated" for event in out["events"])
+        assert out["plan_present"] is True
+        assert out["plan_status"] == "validated"
+        assert out["plan"]["run_id"] == run_id
+        assert out["events"][0]["event"] == "plan_state"
+        assert any("event_id" in event and "type" in event for event in out["events"][1:])
+        assert any(event.get("type") == "plan_validated" for event in out["events"][1:])
     
     def test_watch_unknown_returns_error(self, tmp_path):
         out = execute({
@@ -358,3 +361,18 @@ class TestResumeMode:
         assert out["status"] == "error"
         assert out["exit_code"] == 5
         assert "durable plan.json" in out["message"]
+
+    def test_run_store_does_not_silently_swallow_plan_creation_failures(self, tmp_path, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("synthetic planning failure")
+
+        monkeypatch.setattr("crucible.planning.build_plan_artifact", boom)
+        with pytest.raises(RuntimeError, match="synthetic planning failure"):
+            create_run_store(
+                run_id=None,
+                project_id="p1",
+                build_id="b1",
+                spec_text="spec",
+                task_plan=_good_plan(),
+                runs_root=str(tmp_path / "runs"),
+            )

@@ -642,18 +642,21 @@ def create_run_store(
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)
     if task_plan:
-        try:
-            from crucible.planning import build_plan_artifact
+        from crucible.planning import PlanningError, build_plan_artifact
 
+        try:
             durable_plan = build_plan_artifact(
                 run_id=run_id,
                 submitted_plan=task_plan,
                 embedding_surface=embedding_surface,
                 embedding_session_ref=embedding_session_ref,
             )
-            store.write_plan(durable_plan)
-        except Exception:
-            pass
+        except PlanningError as e:
+            manifest.plan_status = "invalid"
+            store.write_manifest(manifest)
+            store.append_event("plan_invalid", payload={"error": str(e)})
+            raise
+        store.write_plan(durable_plan)
     store.append_event("run_started", payload={"run_id": run_id, "project_id": project_id})
     return store, manifest
 

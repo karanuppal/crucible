@@ -321,6 +321,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if store is None:
         sys.stderr.write(f"unknown run_id: {args.run_id}\n")
         return 4
+
+    manifest = store.read_manifest()
+    durable_plan = store.read_plan()
+    plan_snapshot = {
+        "event": "plan_state",
+        "run_id": args.run_id,
+        "plan_present": durable_plan is not None,
+        "plan_status": (durable_plan or {}).get("status") or (manifest.plan_status if manifest else "missing"),
+        "plan_path": store.plan_path,
+        "plan": durable_plan,
+    }
     
     def _emit_events(events):
         if args.jsonl:
@@ -331,6 +342,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 loc = f"[{e.task_id}]" if e.task_id else ""
                 print(f"{e.timestamp:.0f} {e.type:30s} {loc} {json.dumps(e.payload)}")
     
+    if args.jsonl:
+        _emit_jsonl(plan_snapshot)
+    else:
+        print(f"plan_present: {plan_snapshot['plan_present']}")
+        print(f"plan_status: {plan_snapshot['plan_status']}")
+        print(f"plan_path: {plan_snapshot['plan_path']}")
+
     seen_event_ids: set[str] = set()
     initial = store.read_events(from_event_id=args.from_event)
     for e in initial:

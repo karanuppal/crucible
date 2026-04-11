@@ -1,4 +1,4 @@
-# Crucible Specification v7.3.1
+# Crucible Specification v7.3.2
 
 **Status:** Build-ready implementation spec  
 **Date:** 2026-04-11
