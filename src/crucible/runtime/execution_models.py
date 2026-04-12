@@ -8,6 +8,10 @@ from typing import Any
 from crucible.runtime.run_store import TaskAttemptRecord
 
 
+STRATEGY_MEMORY_FILENAME = "strategy-memory.json"
+REPO_SUMMARY_FILENAME = "repo_summary.json"
+
+
 @dataclass
 class ExecutionPacket:
     packet_id: str
@@ -56,13 +60,53 @@ def summarize_repo_context(workspace_root: str, task: dict[str, Any], *, max_fil
     relevant_files = _extract_relevant_files(root, task, max_files=max_files)
     return {
         "workspace_path": str(root),
-        "repo_summary": {
-            "root_name": root.name,
-            "exists": root.exists(),
-            "relevant_file_count": len(relevant_files),
-        },
+        "repo_summary": build_repo_summary(root, relevant_files),
         "relevant_files": relevant_files,
     }
+
+
+def build_repo_summary(root: Path, relevant_files: list[str]) -> dict[str, Any]:
+    return {
+        "root_name": root.name,
+        "exists": root.exists(),
+        "relevant_file_count": len(relevant_files),
+    }
+
+
+def persist_repo_summary_artifact(run_root: str, task_id: str, repo_context: dict[str, Any]) -> str:
+    repo_summary = dict(repo_context.get("repo_summary") or {})
+    payload = {
+        "task_id": task_id,
+        "workspace_path": repo_context.get("workspace_path", ""),
+        "repo_summary": repo_summary,
+        "relevant_files": list(repo_context.get("relevant_files") or []),
+    }
+    path = Path(run_root) / "artifacts" / task_id / REPO_SUMMARY_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return str(path.relative_to(Path(run_root)))
+
+
+def ensure_strategy_memory_artifact(
+    run_root: str,
+    task_id: str,
+    *,
+    run_id: str,
+    prior_attempts: list[TaskAttemptRecord],
+) -> str:
+    path = Path(run_root) / "artifacts" / task_id / STRATEGY_MEMORY_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        payload = {
+            "task_id": task_id,
+            "run_id": run_id,
+            "entries": [],
+            "current_hypotheses": [],
+            "prior_attempt_ids": [attempt.attempt_id for attempt in prior_attempts],
+            "phase": "phase-2-bootstrap",
+        }
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return str(path.relative_to(Path(run_root)))
 
 
 def _extract_relevant_files(root: Path, task: dict[str, Any], *, max_files: int) -> list[str]:
@@ -108,8 +152,9 @@ def build_execution_packet(
     prior_attempts: list[TaskAttemptRecord],
     prior_evidence_refs: list[str],
     strategy_memory_ref: str | None = None,
+    repo_context: dict[str, Any] | None = None,
 ) -> ExecutionPacket:
-    repo_context = summarize_repo_context(workspace_root, task)
+    repo_context = dict(repo_context) if repo_context is not None else summarize_repo_context(workspace_root, task)
     required_commands = []
     criteria = task.get("criteria", []) if isinstance(task.get("criteria"), list) else []
     must_pass = []

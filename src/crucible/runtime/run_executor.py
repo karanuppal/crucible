@@ -32,6 +32,9 @@ from crucible.planning import PlanningError, ensure_validated_plan
 from crucible.runtime.execution_models import (
     StructuredExecutionResult,
     build_execution_packet,
+    ensure_strategy_memory_artifact,
+    persist_repo_summary_artifact,
+    summarize_repo_context,
 )
 from crucible.runtime.run_store import (
     CostSummary,
@@ -560,15 +563,26 @@ def _run_attempt(
         prior_evidence_refs.extend(prior.result_evidence_refs)
         if prior.failure_packet_ref:
             prior_evidence_refs.append(prior.failure_packet_ref)
+    run_id = store.read_manifest().run_id if store.read_manifest() is not None else "unknown"
+    repo_context = summarize_repo_context(workspace_record.path or os.getcwd(), task)
+    repo_summary_ref = persist_repo_summary_artifact(store.run_root, task["task_id"], repo_context)
+    repo_context["repo_summary_ref"] = repo_summary_ref
+    strategy_memory_ref = ensure_strategy_memory_artifact(
+        store.run_root,
+        task["task_id"],
+        run_id=run_id,
+        prior_attempts=prior_attempt_records,
+    )
     execution_packet = build_execution_packet(
-        run_id=store.read_manifest().run_id if store.read_manifest() is not None else "unknown",
+        run_id=run_id,
         task=task,
         attempt_id=attempt_id,
         attempt_series=attempt_index + 1,
         workspace_root=workspace_record.path or os.getcwd(),
         prior_attempts=prior_attempt_records,
         prior_evidence_refs=prior_evidence_refs,
-        strategy_memory_ref=None,
+        strategy_memory_ref=strategy_memory_ref,
+        repo_context=repo_context,
     )
 
     for crit in criteria:
@@ -772,15 +786,26 @@ def _run_review_attempt(
         record for record in store.attempts_for_task(task["task_id"])
         if record.attempt_id != attempt_id
     ]
+    run_id = store.read_manifest().run_id if store.read_manifest() is not None else "unknown"
+    repo_context = summarize_repo_context(workspace_record.path or os.getcwd(), task)
+    repo_summary_ref = persist_repo_summary_artifact(store.run_root, task["task_id"], repo_context)
+    repo_context["repo_summary_ref"] = repo_summary_ref
+    strategy_memory_ref = ensure_strategy_memory_artifact(
+        store.run_root,
+        task["task_id"],
+        run_id=run_id,
+        prior_attempts=prior_attempt_records,
+    )
     review_packet = build_execution_packet(
-        run_id=store.read_manifest().run_id if store.read_manifest() is not None else "unknown",
+        run_id=run_id,
         task=task,
         attempt_id=attempt_id,
         attempt_series=attempt_index + 1,
         workspace_root=workspace_record.path or os.getcwd(),
         prior_attempts=prior_attempt_records,
         prior_evidence_refs=[ref for record in prior_attempt_records for ref in ([*record.result_evidence_refs] + ([record.failure_packet_ref] if record.failure_packet_ref else []))],
-        strategy_memory_ref=None,
+        strategy_memory_ref=strategy_memory_ref,
+        repo_context=repo_context,
     )
     review_spec = AdapterRunSpec(
         spec_id=f"{task['task_id']}.review",

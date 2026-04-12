@@ -169,3 +169,60 @@ def test_execute_run_uses_task_aware_packet_in_default_path(tmp_path):
     attempts = store.attempts_for_task("task-1")
     assert attempts[0].metadata["execution_packet"]["task_id"] == "task-1"
     assert attempts[0].metadata["structured_execution_result"]["status"] == "task_succeeded"
+
+
+def test_execute_run_persists_repo_summary_and_strategy_memory_refs(tmp_path):
+    plan = {
+        "spec": "phase 2 packet artifacts",
+        "project_id": "phase2",
+        "build_id": "b1",
+        "tasks": [{
+            "task_id": "task-1",
+            "description": "Fix module behavior",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "src/module.py",
+                    "verification_command": "echo PASS",
+                    "expected_output": "PASS",
+                },
+            }],
+            "role": "builder",
+            "review_required": True,
+        }],
+    }
+    normalized = lint_plan(plan).normalized_plan or plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed" / "src").mkdir(parents=True)
+    adapter = PacketAwareAdapter()
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=lambda s: [adapter],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == "complete"
+    build_attempt = store.attempts_for_task("task-1")[0]
+    packet = build_attempt.metadata["execution_packet"]
+    repo_summary_ref = packet["repo_context"]["repo_summary_ref"]
+    strategy_memory_ref = packet["history"]["strategy_memory_ref"]
+
+    repo_summary_path = Path(store.run_root) / repo_summary_ref
+    strategy_memory_path = Path(store.run_root) / strategy_memory_ref
+
+    assert repo_summary_path.exists()
+    assert strategy_memory_path.exists()
+    assert json.loads(repo_summary_path.read_text())["relevant_files"] == ["src/module.py"]
+    assert json.loads(strategy_memory_path.read_text())["phase"] == "phase-2-bootstrap"

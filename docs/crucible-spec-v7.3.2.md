@@ -79,7 +79,7 @@ These are still missing as first-class architecture:
 
 ### 2.3 Honest current default path
 
-`LocalShellAdapter` is still an **honest verification baseline**, not the final execution core. It treats `AdapterRunSpec.prompt` as the command to run. That is useful for truthful validation and testability, but it is not the end-state architecture for task-aware software execution.
+`LocalShellAdapter` is still an **honest verification baseline**, not the final execution core. In the current Phase 2 path it executes `AdapterRunSpec.metadata["command"]` when present and falls back to `AdapterRunSpec.prompt` for older callers. That keeps the shell adapter honest while allowing `prompt` to carry task-aware context instead of serving as the sole command channel.
 
 ---
 

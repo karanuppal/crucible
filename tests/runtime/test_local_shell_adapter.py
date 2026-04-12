@@ -95,6 +95,7 @@ class TestRealExecution:
         ))
         result = adapter.collect(handle)
         assert result.status == AdapterStatus.COMPLETE
+        assert "command: printf 'READY\\n'" in result.summary
     
     def test_capability_check_rejects_unsupported(self):
         adapter = LocalShellAdapter()
