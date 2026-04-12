@@ -41,6 +41,12 @@ def _bad_plan():
     return {"spec": "x", "project_id": "p", "build_id": "b", "tasks": []}
 
 
+def _ambiguous_plan():
+    plan = _good_plan()
+    plan["spec"] = "openclaw wrapper todo decide later"
+    return plan
+
+
 class TestSchemaContract:
     def test_tool_schema_present(self):
         assert TOOL_SCHEMA["name"] == "crucible"
@@ -124,6 +130,24 @@ class TestRunMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["status"] == "lint_failed"
+
+    def test_ambiguous_run_does_not_leave_validated_plan(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        out = execute({
+            "mode": "run",
+            "plan": _ambiguous_plan(),
+            "runs_dir": runs_dir,
+        })
+
+        assert out["status"] == "terminal"
+        assert out["exit_code"] == 3
+        run_id = os.listdir(runs_dir)[0]
+        run_root = os.path.join(runs_dir, run_id)
+        assert not os.path.exists(os.path.join(run_root, "plan.json"))
+
+        manifest = json.loads(open(os.path.join(run_root, "run.json")).read())
+        assert manifest["current_status"] == "escalated"
+        assert manifest["plan_status"] == "missing"
     
     def test_embedding_session_ref_threaded_into_manifest(self, tmp_path):
         out = execute({

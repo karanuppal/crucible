@@ -45,6 +45,35 @@ def _bad_plan_json(tmp_path):
     return str(path)
 
 
+def _ambiguous_plan_json(tmp_path):
+    plan = {
+        "spec": "build something todo decide later",
+        "project_id": "p1",
+        "build_id": "b1",
+        "tasks": [
+            {
+                "task_id": "implement-foo",
+                "description": "implement src/foo.py later",
+                "criteria": [{
+                    "criterion_id": "c1",
+                    "criterion_class": "must_pass",
+                    "triple": {
+                        "build_target": "non-path-target",
+                        "verification_command": "echo 'all PASSED here'",
+                        "expected_output": "PASSED",
+                        "failure_signature": "FAILED",
+                    },
+                }],
+                "role": "builder",
+                "intensity_hint": "S",
+            }
+        ],
+    }
+    path = tmp_path / "ambiguous.json"
+    path.write_text(json.dumps(plan))
+    return str(path)
+
+
 class TestLintPlan:
     def test_valid_plan_exits_zero(self, tmp_path):
         plan_path = _good_plan_json(tmp_path)
@@ -102,6 +131,21 @@ class TestRun:
         assert "acceptance_criteria" in task
         assert "validation_policy" in task
         assert "review_policy" in task
+
+    def test_ambiguous_run_does_not_persist_validated_plan(self, tmp_path):
+        plan_path = _ambiguous_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+
+        rc = main(["--runs-dir", runs_dir, "run", plan_path])
+
+        assert rc == 3
+        run_id = os.listdir(runs_dir)[0]
+        run_root = tmp_path / "runs" / run_id
+        assert not (run_root / "plan.json").exists()
+
+        manifest = json.loads((run_root / "run.json").read_text())
+        assert manifest["current_status"] == "escalated"
+        assert manifest["plan_status"] == "missing"
 
 
 class TestStatus:

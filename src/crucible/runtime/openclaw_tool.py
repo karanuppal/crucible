@@ -236,6 +236,7 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
             embedding_session_ref=embedding_session_ref,
             runs_root=runs_dir or default_runs_root(),
             workspace_root=workspace_root,
+            persist_validated_plan=False,
         )
 
         ambiguity = detect_ambiguity(normalized)

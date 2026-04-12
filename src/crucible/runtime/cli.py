@@ -142,6 +142,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         embedding_session_ref=embedding_session_ref,
         runs_root=runs_root,
         workspace_root=workspace_root,
+        persist_validated_plan=False,
     )
 
     ambiguity = detect_ambiguity(normalized)

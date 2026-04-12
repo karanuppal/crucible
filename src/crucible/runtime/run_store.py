@@ -610,6 +610,7 @@ def create_run_store(
     runs_root: str | None = None,
     ledger_ref: str = "",
     workspace_root: str = "",
+    persist_validated_plan: bool = True,
 ) -> tuple[RunStore, RunManifest]:
     """Create a fresh run directory and return (store, manifest)."""
     if run_id is None:
@@ -641,7 +642,7 @@ def create_run_store(
     )
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)
-    if task_plan:
+    if task_plan and persist_validated_plan:
         from crucible.planning import PlanningError, build_plan_artifact
 
         try:
