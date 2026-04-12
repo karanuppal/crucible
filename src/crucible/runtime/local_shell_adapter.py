@@ -96,9 +96,12 @@ class LocalShellAdapter(BackendAdapter):
         handle_id = f"{self._backend_id}-{uuid.uuid4().hex[:10]}"
         started = time.time()
         
-        # The prompt carries the verification command (run_executor encodes it).
-        # Optional metadata for expected output: spec.metadata.get("expected_output")
+        # Phase 2: default execution is task-aware. Real execution commands live
+        # in structured metadata; prompt remains available for agentic backends.
+        # Fall back to spec.prompt for older callers/tests.
         cmd = spec.prompt
+        if hasattr(spec, "metadata") and isinstance(getattr(spec, "metadata", None), dict):
+            cmd = spec.metadata.get("command", cmd)
         expected = ""
         if hasattr(spec, "metadata") and isinstance(getattr(spec, "metadata", None), dict):
             expected = spec.metadata.get("expected_output", "") or ""

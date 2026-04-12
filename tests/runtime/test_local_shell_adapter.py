@@ -85,6 +85,16 @@ class TestRealExecution:
         ))
         result = adapter.collect(handle)
         assert result.status == AdapterStatus.COMPLETE
+
+    def test_metadata_command_overrides_prompt_for_task_aware_execution(self):
+        adapter = LocalShellAdapter()
+        handle = adapter.spawn(_spec(
+            "Task: fix auth bug",
+            expected="READY",
+            metadata={"command": "printf 'READY\\n'"},
+        ))
+        result = adapter.collect(handle)
+        assert result.status == AdapterStatus.COMPLETE
     
     def test_capability_check_rejects_unsupported(self):
         adapter = LocalShellAdapter()

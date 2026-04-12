@@ -29,6 +29,10 @@ from crucible.policy.budget_tracker import BudgetTracker
 from crucible.policy.circuit_breaker import CircuitBreaker
 from crucible.runner.non_identical_rule import NonIdenticalRetryRule
 from crucible.planning import PlanningError, ensure_validated_plan
+from crucible.runtime.execution_models import (
+    StructuredExecutionResult,
+    build_execution_packet,
+)
 from crucible.runtime.run_store import (
     CostSummary,
     RunManifest,
@@ -547,6 +551,26 @@ def _run_attempt(
         store.write_attempt(attempt_record)
         return {"attempt_record": attempt_record, "criteria_results": [], "failure_packet": first_failure_packet}
 
+    prior_attempt_records = [
+        record for record in store.attempts_for_task(task["task_id"])
+        if record.attempt_id != attempt_id
+    ]
+    prior_evidence_refs: list[str] = []
+    for prior in prior_attempt_records:
+        prior_evidence_refs.extend(prior.result_evidence_refs)
+        if prior.failure_packet_ref:
+            prior_evidence_refs.append(prior.failure_packet_ref)
+    execution_packet = build_execution_packet(
+        run_id=store.read_manifest().run_id if store.read_manifest() is not None else "unknown",
+        task=task,
+        attempt_id=attempt_id,
+        attempt_series=attempt_index + 1,
+        workspace_root=workspace_record.path or os.getcwd(),
+        prior_attempts=prior_attempt_records,
+        prior_evidence_refs=prior_evidence_refs,
+        strategy_memory_ref=None,
+    )
+
     for crit in criteria:
         crit_id = crit.get("criterion_id", "")
         crit_class = crit.get("criterion_class", "must_pass")
@@ -568,11 +592,17 @@ def _run_attempt(
 
         spec = AdapterRunSpec(
             spec_id=f"{task['task_id']}.{crit_id}",
-            prompt=cmd,
+            prompt=(
+                f"Task: {execution_packet.task['goal']}\n"
+                f"Criterion: {crit_id}\n"
+                f"Attempt type: {attempt_type.value}\n"
+                f"Relevant files: {', '.join(execution_packet.repo_context.get('relevant_files', [])) or 'none'}"
+            ),
             cwd=workspace_record.path or os.getcwd(),
             timeout_seconds=per_criterion_timeout_seconds,
             required_capabilities={Capability.SHELL_EXEC},
             metadata={
+                "command": cmd,
                 "expected_output": expected,
                 "build_target": build_target,
                 "task_id": task["task_id"],
@@ -582,6 +612,7 @@ def _run_attempt(
                 "workspace_path": workspace_record.path,
                 "workspace_mode": workspace_record.lineage_type.value,
                 "environment": workspace_record.metadata.get("environment", {}),
+                "execution_packet": execution_packet.to_dict(),
             },
         )
 
@@ -667,6 +698,25 @@ def _run_attempt(
 
     final_status = AdapterStatus.COMPLETE if all_must_pass_passed and any_must_pass_present else AdapterStatus.FAILED
     manifest_path = evidence_store.store_manifest(evidence_manifest)
+    execution_result = StructuredExecutionResult(
+        run_id=execution_packet.run_id,
+        task_id=task["task_id"],
+        status="task_succeeded" if final_status == AdapterStatus.COMPLETE else "task_failed",
+        terminal=True,
+        terminal_reason="validation_passed" if final_status == AdapterStatus.COMPLETE else "validation_failed",
+        recommended_transition="accept" if final_status == AdapterStatus.COMPLETE else "repair",
+        attempt_count=attempt_index + 1,
+        final_attempt_id=attempt_id,
+        summary="; ".join(f"{item['criterion_id']}={item['verdict']}" for item in per_criterion_results),
+        artifact_refs={
+            "validator_report": str(manifest_path),
+            "failure_packet": first_failure_packet.to_dict() if first_failure_packet else None,
+        },
+        metrics={
+            "criterion_count": len(per_criterion_results),
+            "must_pass_present": any_must_pass_present,
+        },
+    )
     attempt_record = TaskAttemptRecord(
         attempt_id=attempt_id,
         task_id=task["task_id"],
@@ -691,6 +741,8 @@ def _run_attempt(
             "attempt_type": attempt_type.value,
             "workspace": workspace_record.to_dict(),
             "review_required": task.get("review_required", False),
+            "execution_packet": execution_packet.to_dict(),
+            "structured_execution_result": execution_result.to_dict(),
         },
     )
     store.write_attempt(attempt_record)
@@ -716,9 +768,27 @@ def _run_review_attempt(
     attempt_started = time.time()
     candidate = next((a for a in reversed(prior_attempts) if getattr(a, "attempt_type", "") != AttemptType.REVIEW.value), None)
     candidate_attempt_id = candidate.attempt_id if candidate is not None else ""
+    prior_attempt_records = [
+        record for record in store.attempts_for_task(task["task_id"])
+        if record.attempt_id != attempt_id
+    ]
+    review_packet = build_execution_packet(
+        run_id=store.read_manifest().run_id if store.read_manifest() is not None else "unknown",
+        task=task,
+        attempt_id=attempt_id,
+        attempt_series=attempt_index + 1,
+        workspace_root=workspace_record.path or os.getcwd(),
+        prior_attempts=prior_attempt_records,
+        prior_evidence_refs=[ref for record in prior_attempt_records for ref in ([*record.result_evidence_refs] + ([record.failure_packet_ref] if record.failure_packet_ref else []))],
+        strategy_memory_ref=None,
+    )
     review_spec = AdapterRunSpec(
         spec_id=f"{task['task_id']}.review",
-        prompt=f"Review attempt {candidate_attempt_id} for task {task['task_id']}",
+        prompt=(
+            f"Review task: {review_packet.task['goal']}\n"
+            f"Candidate attempt: {candidate_attempt_id}\n"
+            f"Relevant files: {', '.join(review_packet.repo_context.get('relevant_files', [])) or 'none'}"
+        ),
         cwd=workspace_record.path or os.getcwd(),
         timeout_seconds=per_criterion_timeout_seconds,
         required_capabilities=set(),
@@ -729,6 +799,7 @@ def _run_review_attempt(
             "workspace_path": workspace_record.path,
             "candidate_attempt_id": candidate_attempt_id,
             "review_contract": "crucible.v5.4.review.json",
+            "execution_packet": review_packet.to_dict(),
         },
     )
     try:
@@ -757,6 +828,19 @@ def _run_review_attempt(
         error = error or "review artifact missing or invalid"
         manifest.unresolved_risks.append("review_contract_invalid")
     manifest_path = evidence_store.store_manifest(manifest)
+    execution_result = StructuredExecutionResult(
+        run_id=review_packet.run_id,
+        task_id=task["task_id"],
+        status="task_succeeded" if status == AdapterStatus.COMPLETE and review_contract_ok else "task_failed",
+        terminal=True,
+        terminal_reason="review_passed" if status == AdapterStatus.COMPLETE and review_contract_ok else "review_failed",
+        recommended_transition="accept" if status == AdapterStatus.COMPLETE and review_contract_ok else "repair",
+        attempt_count=attempt_index + 1,
+        final_attempt_id=attempt_id,
+        summary=summary,
+        artifact_refs={"validator_report": str(manifest_path)},
+        metrics={"review_contract_valid": review_contract_ok},
+    )
     attempt_record = TaskAttemptRecord(
         attempt_id=attempt_id,
         task_id=task["task_id"],
@@ -780,6 +864,8 @@ def _run_review_attempt(
             "review_payload": review_payload,
             "candidate_attempt_id": candidate_attempt_id,
             "review_contract_valid": review_contract_ok,
+            "execution_packet": review_packet.to_dict(),
+            "structured_execution_result": execution_result.to_dict(),
         },
     )
     store.write_attempt(attempt_record)
