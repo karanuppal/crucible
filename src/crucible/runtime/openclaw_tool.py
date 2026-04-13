@@ -17,7 +17,7 @@ Output (dict):
   exit_code: int
   run_id: str          # always present after run/resume/detach
   run_root: str        # always present after run/resume/detach
-  terminal_status: str # complete|failed|partial|blocked|cancelled (when terminal)
+  terminal_status: str # run_succeeded|run_failed|run_blocked|run_escalated|run_cancelled (when terminal)
   message: str         # human-readable error
   events: list         # for watch
   findings: list       # for lint failures
@@ -44,10 +44,41 @@ from crucible.planning import (
     detect_ambiguity,
     ensure_validated_plan,
 )
+from crucible.runtime.statuses import RunTerminalStatus, legacy_run_status
 
 
 TOOL_NAME = "crucible"
 TOOL_VERSION = "0.2.0"
+
+
+def run(input_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(input_json)
+    payload["mode"] = "run"
+    return execute(payload)
+
+
+def lint(input_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(input_json)
+    payload["mode"] = "lint"
+    return execute(payload)
+
+
+def status(input_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(input_json)
+    payload["mode"] = "status"
+    return execute(payload)
+
+
+def watch(input_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(input_json)
+    payload["mode"] = "watch"
+    return execute(payload)
+
+
+def resume(input_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(input_json)
+    payload["mode"] = "resume"
+    return execute(payload)
 
 
 def _cli_command() -> list[str]:
@@ -121,7 +152,16 @@ def _exit_to_status(exit_code: int) -> str:
 
 def _derive_semantic_state(current_status: str, attempts: list[dict[str, Any]] | None = None) -> str:
     attempts = attempts or []
-    if current_status in {"complete", "failed", "blocked", "partial"}:
+    terminal_semantic_map = {
+        RunTerminalStatus.SUCCEEDED.value: "complete",
+        RunTerminalStatus.FAILED.value: "failed",
+        RunTerminalStatus.BLOCKED.value: "blocked",
+        RunTerminalStatus.ESCALATED.value: "awaiting_user",
+        RunTerminalStatus.CANCELLED.value: "cancelled",
+    }
+    if current_status in terminal_semantic_map:
+        return terminal_semantic_map[current_status]
+    if current_status in {"complete", "failed", "blocked", "partial", "cancelled", "awaiting_user"}:
         return current_status
     if any(a.get("needs_reconciliation") for a in attempts):
         return "repairing"
@@ -270,7 +310,7 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
                     execute_run(
                         store=store,
                         manifest=manifest,
-                        plan=normalized,
+                        plan=ensure_validated_plan(store.read_plan()),
                         adapter_factory=adapter_factory,
                         workspace_root=workspace_root,
                     )
@@ -278,10 +318,10 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
                     store.append_event("background_run_failed", payload={"error": str(e)})
                     store.write_result(RunSummary(
                         run_id=manifest.run_id,
-                        terminal_status="failed",
+                        terminal_status=RunTerminalStatus.FAILED.value,
                         blocked_reason=f"background run failed: {e}",
                     ))
-                    store.update_manifest_status("done", "failed")
+                    store.update_manifest_status("done", RunTerminalStatus.FAILED.value)
 
             thread = threading.Thread(
                 target=_runner,
@@ -301,17 +341,17 @@ def _do_run(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, Any]:
         summary = execute_run(
             store=store,
             manifest=manifest,
-            plan=normalized,
+            plan=ensure_validated_plan(store.read_plan()),
             adapter_factory=adapter_factory,
             workspace_root=workspace_root,
         )
         out = {
-            "status": "ok" if summary.terminal_status == "complete" else "terminal",
-            "exit_code": 0 if summary.terminal_status == "complete" else 3,
+            "status": "ok" if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else "terminal",
+            "exit_code": 0 if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else 3,
             "run_id": manifest.run_id,
             "run_root": manifest.run_root,
             "terminal_status": summary.terminal_status,
-            "semantic_state": summary.terminal_status,
+            "semantic_state": _derive_semantic_state(summary.terminal_status),
             "plan_status": durable_plan["status"],
             "plan_path": store.plan_path,
             "plan": durable_plan,
@@ -467,12 +507,12 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
                 result = store.read_result() or {}
                 durable_plan = store.read_plan()
                 out.update({
-                    "status": "ok" if result.get("terminal_status") == "complete" else "terminal",
-                    "exit_code": 0 if result.get("terminal_status") == "complete" else 3,
+                    "status": "ok" if result.get("terminal_status") == RunTerminalStatus.SUCCEEDED.value else "terminal",
+                    "exit_code": 0 if result.get("terminal_status") == RunTerminalStatus.SUCCEEDED.value else 3,
                     "terminal_status": result.get("terminal_status", ""),
                     "completed_tasks": result.get("completed_tasks", []),
                     "failed_tasks": result.get("failed_tasks", []),
-                    "semantic_state": result.get("terminal_status", "complete"),
+                    "semantic_state": _derive_semantic_state(result.get("terminal_status", "complete")),
                     "plan_status": (durable_plan or {}).get("status", "missing"),
                     "plan_path": store.plan_path,
                     "plan": durable_plan,
@@ -481,8 +521,7 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
 
             flagged = store.reconcile_in_flight_attempts()
             store.append_event("run_resumed", payload={"reconciled_attempts": [a.attempt_id for a in flagged]})
-            plan = store.read_tasks_snapshot()
-            if plan is None:
+            if store.read_tasks_snapshot() is None:
                 out.update({"status": "error", "exit_code": 5, "message": f"run {run_id} is missing plan"})
                 return out
             try:
@@ -526,19 +565,19 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             summary = execute_run(
                 store=store,
                 manifest=manifest,
-                plan=plan,
+                plan=durable_plan,
                 adapter_factory=adapter_factory,
                 workspace_root=workspace_root,
             )
             out.update({
-                "status": "ok" if summary.terminal_status == "complete" else "terminal",
-                "exit_code": 0 if summary.terminal_status == "complete" else 3,
+                "status": "ok" if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else "terminal",
+                "exit_code": 0 if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else 3,
                 "terminal_status": summary.terminal_status,
                 "completed_tasks": summary.completed_tasks,
                 "failed_tasks": summary.failed_tasks,
                 "partial_tasks": summary.partial_tasks,
                 "blocked_reason": summary.blocked_reason,
-                "semantic_state": summary.terminal_status,
+                "semantic_state": _derive_semantic_state(summary.terminal_status),
                 "plan_status": durable_plan.get("status", "missing"),
                 "plan_path": store.plan_path,
                 "plan": durable_plan,
@@ -592,13 +631,13 @@ def _do_resume(input_json: dict[str, Any], runs_dir: str | None) -> dict[str, An
             out["terminal_status"] = result.get("terminal_status", "")
             out["completed_tasks"] = result.get("completed_tasks", [])
             out["failed_tasks"] = result.get("failed_tasks", [])
-            out["semantic_state"] = result.get("terminal_status", "")
+            out["semantic_state"] = _derive_semantic_state(result.get("terminal_status", ""))
         if obj.get("event") == "resumed":
             summary = obj.get("summary") or {}
             out["terminal_status"] = summary.get("terminal_status", "")
             out["completed_tasks"] = summary.get("completed_tasks", [])
             out["failed_tasks"] = summary.get("failed_tasks", [])
-            out["semantic_state"] = summary.get("terminal_status", "")
+            out["semantic_state"] = _derive_semantic_state(summary.get("terminal_status", ""))
             out["plan_status"] = obj.get("plan_status", out.get("plan_status", "missing"))
             out["plan_path"] = obj.get("plan_path", out.get("plan_path", ""))
     if stderr:
@@ -633,7 +672,7 @@ def _build_run_response(rc: int, stdout: str, stderr: str) -> dict[str, Any]:
         elif event == "run_terminal":
             summary = obj.get("summary") or {}
             out["terminal_status"] = summary.get("terminal_status", "")
-            out["semantic_state"] = summary.get("terminal_status", "")
+            out["semantic_state"] = _derive_semantic_state(summary.get("terminal_status", ""))
             out["completed_tasks"] = summary.get("completed_tasks", [])
             out["failed_tasks"] = summary.get("failed_tasks", [])
             out["partial_tasks"] = summary.get("partial_tasks", [])

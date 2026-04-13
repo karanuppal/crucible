@@ -2,13 +2,35 @@ from crucible.runtime.resume_handler import ResumeHandler
 from crucible.runtime.run_store import TaskAttemptRecord, create_run_store
 
 
+VALID_PLAN = {
+    "spec": "spec",
+    "project_id": "proj",
+    "build_id": "b1",
+    "tasks": [{
+        "task_id": "task-1",
+        "description": "verify src/foo.py with tests/test_foo.py",
+        "criteria": [{
+            "criterion_id": "c1",
+            "criterion_class": "must_pass",
+            "triple": {
+                "build_target": "non-path-target",
+                "verification_command": "echo OK",
+                "expected_output": "OK",
+            },
+        }],
+        "role": "builder",
+        "intensity_hint": "S",
+    }],
+}
+
+
 def test_resume_handler_reconstructs_semantic_state(tmp_path):
     store, manifest = create_run_store(
         run_id="run-1",
         project_id="proj",
         build_id="b1",
         spec_text="spec",
-        task_plan={"project_id": "proj", "build_id": "b1", "tasks": []},
+        task_plan=VALID_PLAN,
         runs_root=str(tmp_path),
         workspace_root=str(tmp_path / "ws"),
     )

@@ -74,7 +74,7 @@ class TestResumeExecution:
         # Resume: must actually execute and complete
         r = _run(["--runs-dir", runs_dir, "resume", manifest.run_id])
         assert r.returncode == 0, f"got {r.returncode}\n{r.stdout}\n{r.stderr}"
-        assert "complete" in r.stdout.lower()
+        assert "run_succeeded" in r.stdout.lower()
         
         # Result file must exist now
         run_dir = os.path.join(runs_dir, manifest.run_id)
@@ -99,7 +99,7 @@ class TestResumeExecution:
         
         r = _run(["--runs-dir", runs_dir, "resume", manifest.run_id])
         assert r.returncode == 3
-        assert "failed" in r.stdout.lower()
+        assert "run_failed" in r.stdout.lower()
     
     def test_resume_already_terminal_returns_correct_code(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -114,7 +114,7 @@ class TestResumeExecution:
         # Resume an already-terminal run
         r = _run(["--runs-dir", runs_dir, "resume", run_id])
         assert r.returncode == 0
-        assert "already terminal" in r.stdout.lower() or "complete" in r.stdout.lower()
+        assert "already terminal" in r.stdout.lower() or "run_succeeded" in r.stdout.lower()
     
     def test_resume_unknown_returns_four(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -148,4 +148,4 @@ class TestDetachExecution:
         result_path = os.path.join(runs_dir, run_dirs[0], "result.json")
         assert os.path.isfile(result_path), "detached process never completed run"
         result = json.loads(open(result_path).read())
-        assert result["terminal_status"] == "complete"
+        assert result["terminal_status"] == "run_succeeded"

@@ -45,6 +45,8 @@ class ExistingRepoProvisionResult:
     stdout: list[str] = field(default_factory=list)
     stderr: list[str] = field(default_factory=list)
     created_paths: list[str] = field(default_factory=list)
+    readiness_checks: list[list[str]] = field(default_factory=list)
+    readiness_failures: list[str] = field(default_factory=list)
     failure_class: str | None = None
     failure_reason: str = ""
     missing_executables: list[str] = field(default_factory=list)
@@ -279,7 +281,7 @@ def ensure_existing_repo_environment(repo_path: str) -> ExistingRepoProvisionRes
         _write_metadata(metadata_path, result)
         return result
 
-    if _environment_already_usable(root, detected, strategy):
+    if _environment_already_usable(root, detected, strategy, result=result):
         result.status = "ready"
         if strategy.environment_path and Path(strategy.environment_path).exists():
             result.created_paths = [strategy.environment_path]
@@ -314,10 +316,11 @@ def ensure_existing_repo_environment(repo_path: str) -> ExistingRepoProvisionRes
             raise ExistingRepoProvisionError(result.failure_reason, failure_class=result.failure_class, result=result)
 
     install_confirmed = any(command == strategy.install_command for command in result.commands_run)
-    if not _environment_already_usable(root, detected, strategy, install_confirmed=install_confirmed):
+    if not _environment_already_usable(root, detected, strategy, install_confirmed=install_confirmed, result=result):
         result.status = "failed"
         result.failure_class = "environment_block"
-        result.failure_reason = "provisioning completed without producing a usable environment"
+        if not result.failure_reason:
+            result.failure_reason = "provisioning completed without producing a usable environment"
         _write_metadata(metadata_path, result)
         raise ExistingRepoProvisionError(result.failure_reason, failure_class=result.failure_class, result=result)
 
@@ -350,6 +353,7 @@ def _environment_already_usable(
     strategy: ExistingRepoStrategy,
     *,
     install_confirmed: bool = False,
+    result: ExistingRepoProvisionResult | None = None,
 ) -> bool:
     if detected.ecosystem == "python":
         venv = root / ".venv"
@@ -361,7 +365,11 @@ def _environment_already_usable(
         if python_bin is None or not python_bin.is_file():
             return False
         if _python_requires_install_marker(root):
-            return install_confirmed or _provision_sentinel_exists(root, strategy)
+            install_ready = install_confirmed or _provision_sentinel_exists(root, strategy)
+            if not install_ready:
+                return False
+        if not _python_validation_tool_ready(root, detected, python_bin, result=result):
+            return False
         return True
     if detected.ecosystem == "node":
         node_modules = root / "node_modules"
@@ -380,6 +388,34 @@ def _python_executable_in_venv(venv: Path) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _python_validation_tool_ready(
+    root: Path,
+    detected: ExistingRepoEnvironment,
+    python_bin: Path,
+    *,
+    result: ExistingRepoProvisionResult | None = None,
+) -> bool:
+    if detected.test_tool != "pytest":
+        return True
+    command = [str(python_bin), "-m", "pytest", "--version"]
+    if result is not None:
+        result.readiness_checks.append(command)
+    try:
+        proc = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    except OSError as exc:
+        if result is not None:
+            result.readiness_failures.append(str(exc))
+            result.failure_reason = f"pytest readiness check could not run: {exc}"
+        return False
+    if proc.returncode == 0:
+        return True
+    failure = proc.stderr.strip() or proc.stdout.strip() or "pytest readiness check failed"
+    if result is not None:
+        result.readiness_failures.append(failure)
+        result.failure_reason = f"python environment missing runnable pytest: {failure}"
+    return False
 
 
 def _python_requires_install_marker(root: Path) -> bool:

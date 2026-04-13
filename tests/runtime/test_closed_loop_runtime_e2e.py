@@ -14,6 +14,7 @@ from crucible.accelerators.capabilities import BackendCapabilities, Capability
 from crucible.runtime.preflight import lint_plan
 from crucible.runtime.run_executor import execute_run
 from crucible.runtime.run_store import create_run_store
+from crucible.runtime.statuses import RunTerminalStatus
 
 
 class RepairingAdapter(BackendAdapter):
@@ -120,7 +121,7 @@ def test_runtime_owns_build_fail_repair_retest_review_loop(tmp_path):
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "complete"
+    assert summary.terminal_status == RunTerminalStatus.SUCCEEDED.value
     attempts = store.attempts_for_task("task-1")
     assert [a.attempt_type for a in attempts] == ["build", "repair", "review"]
     assert attempts[0].status == "failed"
@@ -273,7 +274,7 @@ def test_environment_fix_continues_through_true_runtime_path(tmp_path):
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "complete"
+    assert summary.terminal_status == RunTerminalStatus.SUCCEEDED.value
     attempts = store.attempts_for_task("task-1")
     assert [a.attempt_type for a in attempts] == ["build", "repair", "review"]
     assert attempts[0].status == "failed"
@@ -327,11 +328,33 @@ def test_review_accepts_valid_contract_with_extra_fields_and_non_blocking_risks(
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "complete"
+    assert summary.terminal_status == RunTerminalStatus.SUCCEEDED.value
     attempts = store.attempts_for_task("task-1")
     assert attempts[-1].attempt_type == "review"
     assert attempts[-1].review_verdict == "accept"
 
+
+
+class EscalatingAdapter(RepairingAdapter):
+    def spawn(self, spec: AdapterRunSpec) -> AdapterRunHandle:
+        workspace = Path(spec.cwd)
+        handle = AdapterRunHandle(handle_id=f"h-{spec.spec_id}", backend_id=self.backend_id(), spawned_at=0.0, spec_id=spec.spec_id)
+        target = workspace / "src" / "app.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needs input\n")
+        self._runs[handle.handle_id] = (AdapterStatus.FAILED, "approval required: deploy", "needs user input", [str(target)])
+        return handle
+
+
+class BlockedAdapter(RepairingAdapter):
+    def spawn(self, spec: AdapterRunSpec) -> AdapterRunHandle:
+        workspace = Path(spec.cwd)
+        handle = AdapterRunHandle(handle_id=f"h-{spec.spec_id}", backend_id=self.backend_id(), spawned_at=0.0, spec_id=spec.spec_id)
+        target = workspace / "src" / "app.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("blocked\n")
+        self._runs[handle.handle_id] = (AdapterStatus.FAILED, "out of scope", "terminal block", [str(target)])
+        return handle
 
 
 class InvalidReviewContractAdapter(RepairingAdapter):
@@ -396,7 +419,7 @@ def test_invalid_review_contract_fails_closed_loop(tmp_path):
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "failed"
+    assert summary.terminal_status == RunTerminalStatus.FAILED.value
     attempts = store.attempts_for_task("task-1")
     assert any(a.attempt_type == "review" and a.status == "failed" for a in attempts)
     events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
@@ -496,7 +519,7 @@ def test_review_rejection_routes_to_debug_and_blocks_when_budget_exhausted(tmp_p
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "failed"
+    assert summary.terminal_status == RunTerminalStatus.FAILED.value
     attempts = store.attempts_for_task("task-1")
     assert [a.attempt_type for a in attempts[:3]] == ["build", "review", "debug"]
     assert any(a.review_verdict == "reject" for a in attempts)
@@ -504,6 +527,98 @@ def test_review_rejection_routes_to_debug_and_blocks_when_budget_exhausted(tmp_p
     event_types = [e["type"] for e in events]
     assert "review_rejected" in event_types
     assert "debug_scheduled" in event_types
+
+
+def test_run_aggregation_preserves_escalated_task_semantics(tmp_path):
+    plan = {
+        "spec": "escalation semantics",
+        "project_id": "loop-e2e",
+        "build_id": "b-escalated",
+        "tasks": [{
+            "task_id": "task-1",
+            "description": "prove escalation reaches run terminal",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "src/app.txt",
+                    "verification_command": "echo PASS",
+                    "expected_output": "PASS",
+                },
+            }],
+            "role": "builder",
+            "intensity_hint": "S",
+            "review_required": False,
+        }],
+    }
+    normalized = lint_plan(plan).normalized_plan or plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed" / "src").mkdir(parents=True)
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=lambda s: [EscalatingAdapter()],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == RunTerminalStatus.ESCALATED.value
+    assert "escalated:task-1" in summary.blocked_reason
+
+
+def test_run_aggregation_preserves_blocked_task_semantics(tmp_path):
+    plan = {
+        "spec": "blocked semantics",
+        "project_id": "loop-e2e",
+        "build_id": "b-blocked",
+        "tasks": [{
+            "task_id": "task-1",
+            "description": "prove blocked reaches run terminal",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "src/app.txt",
+                    "verification_command": "echo PASS",
+                    "expected_output": "PASS",
+                },
+            }],
+            "role": "builder",
+            "intensity_hint": "S",
+            "review_required": False,
+        }],
+    }
+    normalized = lint_plan(plan).normalized_plan or plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed" / "src").mkdir(parents=True)
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=lambda s: [BlockedAdapter()],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == RunTerminalStatus.BLOCKED.value
+    assert "blocked:task-1" in summary.blocked_reason
 
 
 def test_missing_env_toolchain_blocks_runtime_instead_of_crashing(tmp_path, monkeypatch):
@@ -556,7 +671,7 @@ version = "0.1.0"
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "failed"
+    assert summary.terminal_status == RunTerminalStatus.BLOCKED.value
     attempts = store.attempts_for_task("task-1")
     assert attempts
     assert all(a.status == "failed" for a in attempts)
@@ -565,6 +680,78 @@ version = "0.1.0"
     evidence = json.loads(Path(attempts[0].failure_packet_ref).read_text())
     assert evidence["failure_class"] == FailureClass.RETRYABLE.value
     assert "environment_hint" in evidence["hints"]
+    assert "tooling_hint" in evidence["hints"]
     assert evidence["error_message"] == "missing required executable: uv"
     events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
-    assert any(event["type"] == "repair_scheduled" for event in events)
+    assert any(event["type"] == "task_blocked" for event in events)
+
+
+def test_task_dependencies_are_enforced_before_dispatch(tmp_path):
+    plan = {
+        "spec": "dependency enforcement",
+        "project_id": "loop-e2e",
+        "build_id": "b-deps",
+        "tasks": [
+            {
+                "task_id": "task-2",
+                "description": "must wait for predecessor",
+                "dependencies": ["task-1"],
+                "criteria": [{
+                    "criterion_id": "c2",
+                    "criterion_class": "must_pass",
+                    "triple": {
+                        "build_target": "src/downstream.txt",
+                        "verification_command": "echo PASS-2",
+                        "expected_output": "PASS-2",
+                    },
+                }],
+                "role": "builder",
+                "intensity_hint": "S",
+                "review_required": False,
+            },
+            {
+                "task_id": "task-1",
+                "description": "fails first",
+                "criteria": [{
+                    "criterion_id": "c1",
+                    "criterion_class": "must_pass",
+                    "triple": {
+                        "build_target": "src/upstream.txt",
+                        "verification_command": "false",
+                        "expected_output": "PASS-1",
+                    },
+                }],
+                "role": "builder",
+                "intensity_hint": "S",
+                "review_required": False,
+            },
+        ],
+    }
+    normalized = lint_plan(plan).normalized_plan or plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed" / "src").mkdir(parents=True)
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=normalized,
+        adapter_factory=lambda s: [RepairingAdapter()],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == RunTerminalStatus.BLOCKED.value
+    assert store.attempts_for_task("task-1")
+    assert store.attempts_for_task("task-2") == []
+    events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
+    dep_block = next(event for event in events if event["type"] == "task_blocked" and event["task_id"] == "task-2")
+    assert dep_block["payload"]["dependencies"] == {"task-1": "task_failed"}
+    assert "unmet task dependencies: task-1=task_failed" in summary.blocked_reason
+    assert "blocked:task-2" in summary.blocked_reason

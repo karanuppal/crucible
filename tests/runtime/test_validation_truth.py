@@ -8,7 +8,16 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
 import pytest
+
+from crucible.accelerators.adapters import AdapterRunHandle, AdapterRunResult, AdapterRunSpec, AdapterStatus, BackendAdapter
+from crucible.accelerators.capabilities import BackendCapabilities, Capability
+from crucible.runtime.preflight import lint_plan
+from crucible.runtime.run_executor import execute_run
+from crucible.runtime.run_store import create_run_store
+from crucible.runtime.statuses import RunTerminalStatus, TaskTerminalStatus
 
 
 CLI = [sys.executable, "-m", "crucible.runtime.cli"]
@@ -60,13 +69,51 @@ def _write(tmp_path, plan):
     return str(p)
 
 
+class _AlwaysFailingAdapter(BackendAdapter):
+    def __init__(self):
+        self._caps = BackendCapabilities(
+            backend_id="always-fail",
+            supports={Capability.SHELL_EXEC, Capability.FILE_WRITE},
+            max_concurrent_runs=1,
+        )
+        self._runs = {}
+
+    def backend_id(self) -> str:
+        return "always-fail"
+
+    def declared_capabilities(self) -> BackendCapabilities:
+        return self._caps
+
+    def spawn(self, spec: AdapterRunSpec) -> AdapterRunHandle:
+        target = Path(spec.cwd) / "src" / "foo.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# still broken\n")
+        handle = AdapterRunHandle(handle_id=f"h-{spec.spec_id}", backend_id=self.backend_id(), spawned_at=0.0, spec_id=spec.spec_id)
+        self._runs[handle.handle_id] = AdapterRunResult(
+            handle_id=handle.handle_id,
+            status=AdapterStatus.FAILED,
+            error="still failing",
+            artifact_paths=[str(target)],
+        )
+        return handle
+
+    def poll(self, handle: AdapterRunHandle) -> AdapterStatus:
+        return self._runs[handle.handle_id].status
+
+    def collect(self, handle: AdapterRunHandle) -> AdapterRunResult:
+        return self._runs[handle.handle_id]
+
+    def kill(self, handle: AdapterRunHandle) -> None:
+        return None
+
+
 class TestValidationTruth:
     def test_failing_command_fails_task(self, tmp_path):
         plan = _plan(command="false", expected="WHATEVER")
         path = _write(tmp_path, plan)
         r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path])
         assert r.returncode == 3, f"expected exit 3, got {r.returncode}\n{r.stdout}\n{r.stderr}"
-        assert "terminal_status: failed" in r.stdout
+        assert "terminal_status: run_failed" in r.stdout
     
     def test_wrong_expected_output_fails_task(self, tmp_path):
         plan = _plan(command="echo BAR", expected="FOO_NOT_PRESENT")
@@ -81,7 +128,7 @@ class TestValidationTruth:
         path = _write(tmp_path, plan)
         r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path])
         assert r.returncode == 3, f"got {r.returncode}: {r.stdout}"
-        assert "terminal_status: failed" in r.stdout
+        assert "terminal_status: run_blocked" in r.stdout
     
     def test_passing_command_passes_task(self, tmp_path):
         plan = _plan(command="echo 'all tests PASSED here'", expected="PASSED")
@@ -91,7 +138,7 @@ class TestValidationTruth:
         r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
                   "--workspace-root", str(tmp_path)])
         assert r.returncode == 0, f"got {r.returncode}: {r.stdout}\n{r.stderr}"
-        assert "terminal_status: complete" in r.stdout
+        assert "terminal_status: run_succeeded" in r.stdout
     
     def test_partial_pass_marks_partial(self, tmp_path):
         # Two tasks: one passes, one fails
@@ -138,12 +185,12 @@ class TestValidationTruth:
         r = _run(["--runs-dir", str(tmp_path / "runs"), "run", path,
                   "--workspace-root", str(tmp_path)])
         assert r.returncode == 3
-        assert "partial" in r.stdout.lower() or "failed" in r.stdout.lower()
-        # Verify the result.json says partial
+        assert "run_failed" in r.stdout
+        # Verify the result.json says the canonical failed run status
         runs_dir = tmp_path / "runs"
         run_dir = list(runs_dir.iterdir())[0]
         result = json.loads((run_dir / "result.json").read_text())
-        assert result["terminal_status"] == "partial"
+        assert result["terminal_status"] == "run_failed"
         assert "good-one" in result["completed_tasks"]
         assert "bad-one" in result["failed_tasks"]
     
@@ -178,7 +225,7 @@ class TestValidationTruth:
         assert r.returncode == 3, (
             f"semantic bypass not blocked: exit={r.returncode}\nstdout: {r.stdout}\nstderr: {r.stderr}"
         )
-        assert "terminal_status: failed" in r.stdout
+        assert "terminal_status: run_failed" in r.stdout
     
     def test_existing_target_with_passing_command_passes(self, tmp_path):
         """Sanity: if the build_target really exists, a real pass should still pass."""
@@ -198,3 +245,34 @@ class TestValidationTruth:
         types = [json.loads(e)["type"] for e in events if e]
         assert "criterion_failed" in types
         assert "task_failed" in types
+
+    def test_task_failed_semantics_do_not_collapse_to_run_blocked(self, tmp_path):
+        plan = lint_plan(_plan(command="true", expected="OK_OK")).normalized_plan
+        store, manifest = create_run_store(
+            run_id=None,
+            project_id=plan["project_id"],
+            build_id=plan["build_id"],
+            spec_text=plan.get("spec", ""),
+            task_plan=plan,
+            runs_root=str(tmp_path / "runs"),
+            workspace_root=str(tmp_path / "seed"),
+        )
+        (tmp_path / "seed" / "src").mkdir(parents=True)
+
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=plan,
+            adapter_factory=lambda s: [_AlwaysFailingAdapter()],
+            workspace_root=str(tmp_path / "seed"),
+        )
+
+        assert summary.terminal_status == RunTerminalStatus.FAILED.value
+        events = [json.loads(line) for line in Path(store.events_path).read_text().splitlines() if line.strip()]
+        semantic_states = [
+            event["payload"].get("semantic_state")
+            for event in events
+            if event["type"] in {"task_failed", "task_blocked"}
+        ]
+        assert TaskTerminalStatus.FAILED.value in semantic_states
+        assert TaskTerminalStatus.BLOCKED.value not in semantic_states

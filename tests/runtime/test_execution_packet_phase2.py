@@ -158,7 +158,7 @@ def test_execute_run_uses_task_aware_packet_in_default_path(tmp_path):
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "complete"
+    assert summary.terminal_status == "run_succeeded"
     build_spec = next(spec for spec in adapter.spawned_specs if spec.metadata["attempt_type"] == "build")
     packet = build_spec.metadata["execution_packet"]
     assert packet["task_id"] == "task-1"
@@ -213,7 +213,7 @@ def test_execute_run_persists_repo_summary_and_strategy_memory_refs(tmp_path):
         workspace_root=str(tmp_path / "seed"),
     )
 
-    assert summary.terminal_status == "complete"
+    assert summary.terminal_status == "run_succeeded"
     build_attempt = store.attempts_for_task("task-1")[0]
     packet = build_attempt.metadata["execution_packet"]
     repo_summary_ref = packet["repo_context"]["repo_summary_ref"]
@@ -225,4 +225,60 @@ def test_execute_run_persists_repo_summary_and_strategy_memory_refs(tmp_path):
     assert repo_summary_path.exists()
     assert strategy_memory_path.exists()
     assert json.loads(repo_summary_path.read_text())["relevant_files"] == ["src/module.py"]
-    assert json.loads(strategy_memory_path.read_text())["phase"] == "phase-2-bootstrap"
+    strategy_memory = json.loads(strategy_memory_path.read_text())
+    assert strategy_memory["phase"] == "phase-3"
+    assert strategy_memory["current_bugfix_state"] == "investigating"
+
+
+def test_execute_run_ignores_forged_in_memory_plan_and_uses_durable_plan_json(tmp_path):
+    durable_plan = {
+        "spec": "durable authority",
+        "project_id": "phase2",
+        "build_id": "b1",
+        "tasks": [{
+            "task_id": "task-1",
+            "description": "Use persisted command",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "src/module.py",
+                    "verification_command": "echo PASS",
+                    "expected_output": "PASS",
+                },
+            }],
+            "role": "builder",
+            "review_required": True,
+        }],
+    }
+    forged_plan = json.loads(json.dumps(durable_plan))
+    forged_plan["tasks"][0]["criteria"][0]["triple"]["verification_command"] = "echo FORGED"
+    forged_plan["tasks"][0]["criteria"][0]["triple"]["build_target"] = "src/forged.py"
+    forged_plan["tasks"][0]["description"] = "Forged runtime payload"
+
+    normalized = lint_plan(durable_plan).normalized_plan or durable_plan
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=normalized["project_id"],
+        build_id=normalized["build_id"],
+        spec_text=normalized.get("spec", ""),
+        task_plan=normalized,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "seed"),
+    )
+    (tmp_path / "seed" / "src").mkdir(parents=True)
+    adapter = PacketAwareAdapter()
+
+    summary = execute_run(
+        store=store,
+        manifest=manifest,
+        plan=forged_plan,
+        adapter_factory=lambda s: [adapter],
+        workspace_root=str(tmp_path / "seed"),
+    )
+
+    assert summary.terminal_status == "run_succeeded"
+    build_spec = next(spec for spec in adapter.spawned_specs if spec.metadata["attempt_type"] == "build")
+    assert build_spec.metadata["command"] == "echo PASS"
+    assert build_spec.metadata["execution_packet"]["repo_context"]["relevant_files"] == ["src/module.py"]
+    assert build_spec.metadata["execution_packet"]["task"]["goal"] == "Use persisted command"

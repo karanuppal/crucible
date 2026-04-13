@@ -296,6 +296,7 @@ Required invariants:
 - no execution starts without `status = validated`
 - every task declares dependencies, acceptance criteria, validation policy, and review policy
 - plan is persisted on disk and visible in status surfaces
+- implementations may persist additional normalized execution fields (for example criterion/build-target detail) inside `plan.json`, but durable execution/resume must treat the persisted `plan.json` as the authority rather than any transient caller-side plan object
 
 ### 6.2 `ExecutionPacket`
 

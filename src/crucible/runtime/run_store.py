@@ -22,16 +22,17 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from enum import Enum
 from typing import Any
+
+from crucible.runtime.statuses import legacy_run_status
 
 
 # ─────────────────────────────────────────────────────────────────
 # Schema (matches v5.3 §26.2)
 # ─────────────────────────────────────────────────────────────────
 
-RunStatusLiteral = str  # "running" | "blocked" | "complete" | "failed" | "partial"
-TerminalStatusLiteral = str  # "complete" | "failed" | "blocked" | "partial" | "cancelled"
+RunStatusLiteral = str
+TerminalStatusLiteral = str
 
 
 @dataclass
@@ -188,6 +189,7 @@ class RunSummary:
         d = {
             "run_id": self.run_id,
             "terminal_status": self.terminal_status,
+            "legacy_terminal_status": legacy_run_status(self.terminal_status),
             "completed_tasks": list(self.completed_tasks),
             "failed_tasks": list(self.failed_tasks),
             "partial_tasks": list(self.partial_tasks),

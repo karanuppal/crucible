@@ -81,7 +81,14 @@ def build_plan_artifact(
             elif criterion_id:
                 informational.append(criterion_id)
 
-        review_required = task.get("role", "builder") != "researcher"
+        review_policy = task.get("review_policy") if isinstance(task.get("review_policy"), dict) else {}
+        if isinstance(task.get("review_required"), bool):
+            review_required = task.get("review_required")
+        elif isinstance(review_policy.get("required"), bool):
+            review_required = review_policy.get("required")
+        else:
+            review_required = False
+        review_tier = str(review_policy.get("tier") or ("standard" if review_required else "none")).strip().lower()
         tasks_out.append({
             "task_id": task["task_id"],
             "description": task.get("description", ""),
@@ -95,8 +102,20 @@ def build_plan_artifact(
             },
             "review_policy": {
                 "required": review_required,
-                "tier": "standard",
+                "tier": review_tier,
             },
+            "criteria": [
+                {
+                    "criterion_id": str(criterion.get("criterion_id") or ""),
+                    "criterion_class": str(criterion.get("criterion_class") or "must_pass"),
+                    "triple": {
+                        "verification_command": str(((criterion.get("triple") if isinstance(criterion.get("triple"), dict) else {}) .get("verification_command") or "")),
+                        "expected_output": str(((criterion.get("triple") if isinstance(criterion.get("triple"), dict) else {}) .get("expected_output") or "")),
+                        "build_target": str(((criterion.get("triple") if isinstance(criterion.get("triple"), dict) else {}) .get("build_target") or "")),
+                    },
+                }
+                for criterion in criteria
+            ],
         })
 
     plan_artifact = {

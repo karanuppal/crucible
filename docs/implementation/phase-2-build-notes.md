@@ -21,6 +21,6 @@ Implemented against `docs/crucible-spec-v7.3.2.md` only.
   - metadata command overrides prompt for task-aware execution
 
 ## Notes for later phases
-- Phase 2 now persists a minimal durable `artifacts/<task_id>/strategy-memory.json` bootstrap and threads its ref through execution/review packets. Phase 3 should evolve that bootstrap into a real rejection ledger with semantic guardrails.
+- Phase 3 has now replaced the old strategy-memory bootstrap with a real durable rejection ledger / bugfix-protocol artifact. Treat any older references to `phase-2-bootstrap` as historical only.
 - Phase 2 also persists a lightweight `artifacts/<task_id>/repo_summary.json` and includes its ref in `repo_context`; richer repo-aware indexing remains future work.
 - `StructuredExecutionResult` is persisted in attempt metadata, but control-plane terminal enums/transition ownership still need fuller Phase 4+ normalization.

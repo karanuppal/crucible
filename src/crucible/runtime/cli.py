@@ -34,6 +34,11 @@ from crucible.runtime.preflight import lint_plan, LintResult
 from crucible.runtime.run_store import (
     RunStore, RunSummary, create_run_store, load_run_store, default_runs_root,
 )
+from crucible.runtime.statuses import (
+    NONSUCCESS_RUN_STATUSES,
+    RunTerminalStatus,
+    legacy_run_status,
+)
 from crucible.runtime.run_executor import execute_run
 
 
@@ -242,7 +247,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         summary = execute_run(
             store=store,
             manifest=manifest,
-            plan=normalized,
+            plan=ensure_validated_plan(store.read_plan()),
             adapter_factory=_default_factory,
             workspace_root=workspace_root,
         )
@@ -256,7 +261,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"completed: {summary.completed_tasks}")
         print(f"failed: {summary.failed_tasks}")
     
-    if summary.terminal_status == "complete":
+    if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value:
         return 0
     return 3
 
@@ -308,9 +313,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     
     if result:
         ts = result.get("terminal_status")
-        if ts == "complete":
+        if ts == RunTerminalStatus.SUCCEEDED.value:
             return 0
-        if ts in {"blocked", "failed", "partial", "cancelled"}:
+        if ts in NONSUCCESS_RUN_STATUSES or ts == "partial":
             return 3
     return 0
 
@@ -373,9 +378,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if store.is_terminal():
         result = store.read_result()
         ts = result.get("terminal_status") if result else None
-        if ts == "complete":
+        if ts == RunTerminalStatus.SUCCEEDED.value:
             return 0
-        if ts in {"blocked", "failed", "partial", "cancelled"}:
+        if ts in NONSUCCESS_RUN_STATUSES or ts == "partial":
             return 3
     return 0
 
@@ -404,7 +409,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             _emit_jsonl({"event": "already_terminal", "result": result})
         else:
             print(f"already terminal: {result.get('terminal_status') if result else 'unknown'}")
-        return 0 if result and result.get("terminal_status") == "complete" else 3
+        return 0 if result and result.get("terminal_status") == RunTerminalStatus.SUCCEEDED.value else 3
     
     # Reconcile in-flight attempts and re-execute the plan from the
     # persisted snapshot. The executor is idempotent enough for our
@@ -413,9 +418,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
     flagged = store.reconcile_in_flight_attempts()
     store.append_event("run_resumed", payload={"reconciled_attempts": [a.attempt_id for a in flagged]})
     
-    plan = store.read_tasks_snapshot()
     manifest = store.read_manifest()
-    if plan is None or manifest is None:
+    if store.read_tasks_snapshot() is None or manifest is None:
         sys.stderr.write(f"run {args.run_id} is missing plan or manifest\n")
         store.release_lock()
         return 5
@@ -479,7 +483,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         summary = execute_run(
             store=store,
             manifest=manifest,
-            plan=plan,
+            plan=durable_plan,
             adapter_factory=_factory,
             workspace_root=workspace_root,
         )
@@ -502,7 +506,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"plan_path: {store.plan_path}")
         print(f"terminal_status: {summary.terminal_status}")
     
-    return 0 if summary.terminal_status == "complete" else 3
+    return 0 if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else 3
 
 
 # ─────────────────────────────────────────────────────────────────

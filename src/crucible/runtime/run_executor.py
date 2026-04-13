@@ -8,6 +8,7 @@ runtime path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -30,10 +31,20 @@ from crucible.policy.circuit_breaker import CircuitBreaker
 from crucible.runner.non_identical_rule import NonIdenticalRetryRule
 from crucible.planning import PlanningError, ensure_validated_plan
 from crucible.runtime.execution_models import (
+    PromptAuditRecord,
     StructuredExecutionResult,
+    ValidatorChainArtifact,
     build_execution_packet,
+    evaluate_retry_admission,
+    build_validation_policy,
     ensure_strategy_memory_artifact,
+    is_bugfix_task,
+    load_strategy_memory_artifact,
+    normalize_review_policy,
+    persist_prompt_audit_record,
     persist_repo_summary_artifact,
+    persist_strategy_memory_artifact,
+    persist_validator_chain_artifact,
     summarize_repo_context,
 )
 from crucible.runtime.run_store import (
@@ -43,6 +54,7 @@ from crucible.runtime.run_store import (
     RunSummary,
     TaskAttemptRecord,
 )
+from crucible.runtime.statuses import RunTerminalStatus, TaskTerminalStatus, legacy_run_status
 from crucible.state.attempt_type import AttemptType
 from crucible.state.workspace_record import WorkspaceLineageType, WorkspaceRecord
 from crucible.workspace.manager import WorkspaceManager
@@ -56,6 +68,45 @@ TERMINAL_STATUSES = {
     TaskStatus.BLOCKED,
     TaskStatus.AWAITING_USER,
 }
+
+
+def _runtime_task_from_durable(task: dict[str, Any]) -> dict[str, Any]:
+    review_policy = task.get("review_policy") if isinstance(task.get("review_policy"), dict) else {}
+    criteria = task.get("criteria") if isinstance(task.get("criteria"), list) else []
+    if not criteria:
+        validation_policy = task.get("validation_policy") if isinstance(task.get("validation_policy"), dict) else {}
+        must_pass = set(validation_policy.get("must_pass") or [])
+        informational = set(validation_policy.get("informational") or [])
+        criteria = []
+        for index, command in enumerate(validation_policy.get("required_commands") or [], start=1):
+            criterion_id = None
+            if index <= len(validation_policy.get("must_pass") or []):
+                criterion_id = (validation_policy.get("must_pass") or [])[index - 1]
+            elif index - len(validation_policy.get("must_pass") or []) <= len(validation_policy.get("informational") or []):
+                criterion_id = (validation_policy.get("informational") or [])[index - len(validation_policy.get("must_pass") or []) - 1]
+            criterion_id = str(criterion_id or f"criterion-{index}")
+            criterion_class = "informational" if criterion_id in informational and criterion_id not in must_pass else "must_pass"
+            criteria.append({
+                "criterion_id": criterion_id,
+                "criterion_class": criterion_class,
+                "triple": {
+                    "verification_command": str(command or ""),
+                    "expected_output": "",
+                    "build_target": "",
+                },
+            })
+    task_type = str(task.get("task_type") or "builder")
+    return {
+        "task_id": str(task["task_id"]),
+        "description": str(task.get("description") or ""),
+        "task_type": task_type,
+        "role": task_type,
+        "dependencies": [str(dep) for dep in task.get("dependencies", [])],
+        "criteria": criteria,
+        "review_policy": review_policy,
+        "review_required": bool(review_policy.get("required", False)),
+        "acceptance_criteria": list(task.get("acceptance_criteria") or []),
+    }
 
 
 def execute_run(
@@ -102,58 +153,115 @@ def execute_run(
     primary = adapters[0]
     store.append_adapter_log(f"using adapter {primary.backend_id()}")
 
-    tasks = plan.get("tasks", [])
-    store.append_event("tasks_loaded", payload={"task_count": len(tasks)})
+    tasks = [_runtime_task_from_durable(task) for task in durable_plan.get("tasks", [])]
+    store.append_event("tasks_loaded", payload={"task_count": len(tasks), "plan_source": store.plan_path})
 
     completed: list[str] = []
     failed: list[str] = []
     partial: list[str] = []
+    blocked: list[str] = []
+    escalated: list[str] = []
+    cancelled: list[str] = []
     blockers: list[str] = []
 
     existing_winners = {
         a.task_id for a in store.list_attempts()
         if a.winning_attempt and a.status == AdapterStatus.COMPLETE.value
     }
+    task_outcomes: dict[str, str] = {task_id: TaskTerminalStatus.SUCCEEDED.value for task_id in existing_winners}
 
     executor = ClosedLoopExecutor()
+    pending_tasks = {task["task_id"]: task for task in tasks}
 
-    for task in tasks:
-        task_id = task["task_id"]
-        if task_id in existing_winners:
-            store.append_event("task_skipped_already_complete", task_id=task_id, payload={})
-            completed.append(task_id)
+    while pending_tasks:
+        progress_made = False
+        for task_id, task in list(pending_tasks.items()):
+            dependencies = [str(dep) for dep in task.get("dependencies", [])]
+            unsatisfied = [dep for dep in dependencies if task_outcomes.get(dep) != TaskTerminalStatus.SUCCEEDED.value]
+            terminal_predecessors = [dep for dep in unsatisfied if dep in task_outcomes]
+            if terminal_predecessors:
+                predecessor_states = {dep: task_outcomes[dep] for dep in terminal_predecessors}
+                reason = "unmet task dependencies: " + ", ".join(
+                    f"{dep}={predecessor_states[dep]}" for dep in terminal_predecessors
+                )
+                store.append_event("task_blocked", task_id=task_id, payload={
+                    "reason": reason,
+                    "semantic_state": TaskTerminalStatus.BLOCKED.value,
+                    "dependencies": predecessor_states,
+                })
+                task_outcomes[task_id] = TaskTerminalStatus.BLOCKED.value
+                blocked.append(task_id)
+                blockers.append(reason)
+                pending_tasks.pop(task_id)
+                progress_made = True
+                continue
+            if unsatisfied:
+                continue
+            if task_id in existing_winners:
+                store.append_event("task_skipped_already_complete", task_id=task_id, payload={})
+                completed.append(task_id)
+                task_outcomes[task_id] = TaskTerminalStatus.SUCCEEDED.value
+                pending_tasks.pop(task_id)
+                progress_made = True
+                continue
+
+            ctx = TaskContext(
+                task_id=task_id,
+                spec=task.get("description", ""),
+                criteria=[c.get("criterion_id", "") for c in task.get("criteria", [])],
+                review_required=task.get("review_required", False),
+            )
+            task_terminal, task_blockers = _execute_task_closed_loop(
+                executor=executor,
+                store=store,
+                manifest=manifest,
+                task=task,
+                ctx=ctx,
+                adapter=primary,
+                workspace_root=workspace_root,
+                workspace_manager=workspace_manager,
+                evidence_store=evidence_store,
+                per_criterion_timeout_seconds=per_criterion_timeout_seconds,
+                max_attempts_per_task=durable_plan.get("global_policy", {}).get("max_attempts_per_task"),
+            )
+
+            if task_terminal == TaskTerminalStatus.SUCCEEDED.value:
+                completed.append(task_id)
+            elif task_terminal == "partial":
+                partial.append(task_id)
+            elif task_terminal == TaskTerminalStatus.BLOCKED.value:
+                blocked.append(task_id)
+            elif task_terminal == TaskTerminalStatus.ESCALATED.value:
+                escalated.append(task_id)
+            elif task_terminal == TaskTerminalStatus.CANCELLED.value:
+                cancelled.append(task_id)
+            else:
+                failed.append(task_id)
+            task_outcomes[task_id] = task_terminal
+            blockers.extend(task_blockers)
+            pending_tasks.pop(task_id)
+            progress_made = True
+        if progress_made:
             continue
+        for task_id, task in list(pending_tasks.items()):
+            unresolved = [dep for dep in task.get("dependencies", []) if dep not in task_outcomes]
+            reason = "dependency resolution deadlock: " + ", ".join(str(dep) for dep in unresolved)
+            store.append_event("task_blocked", task_id=task_id, payload={
+                "reason": reason,
+                "semantic_state": TaskTerminalStatus.BLOCKED.value,
+                "dependencies": {str(dep): "unresolved" for dep in unresolved},
+            })
+            task_outcomes[task_id] = TaskTerminalStatus.BLOCKED.value
+            blocked.append(task_id)
+            blockers.append(reason)
+            pending_tasks.pop(task_id)
+        break
 
-        ctx = TaskContext(
-            task_id=task_id,
-            spec=task.get("description", ""),
-            criteria=[c.get("criterion_id", "") for c in task.get("criteria", [])],
-            review_required=task.get("review_required", False),
-        )
-        task_terminal, task_blockers = _execute_task_closed_loop(
-            executor=executor,
-            store=store,
-            manifest=manifest,
-            task=task,
-            ctx=ctx,
-            adapter=primary,
-            workspace_root=workspace_root,
-            workspace_manager=workspace_manager,
-            evidence_store=evidence_store,
-            per_criterion_timeout_seconds=per_criterion_timeout_seconds,
-        )
-
-        if task_terminal == "complete":
-            completed.append(task_id)
-        elif task_terminal == "partial":
-            partial.append(task_id)
-            failed.append(task_id)
-        else:
-            failed.append(task_id)
-        blockers.extend(task_blockers)
-
-    task_states = ([{"task_id": task_id, "status": "complete"} for task_id in completed]
-        + [{"task_id": task_id, "status": "blocked"} for task_id in failed]
+    task_states = ([{"task_id": task_id, "status": TaskTerminalStatus.SUCCEEDED.value} for task_id in completed]
+        + [{"task_id": task_id, "status": TaskTerminalStatus.FAILED.value} for task_id in failed]
+        + [{"task_id": task_id, "status": TaskTerminalStatus.BLOCKED.value} for task_id in blocked]
+        + [{"task_id": task_id, "status": TaskTerminalStatus.ESCALATED.value} for task_id in escalated]
+        + [{"task_id": task_id, "status": TaskTerminalStatus.CANCELLED.value} for task_id in cancelled]
         + [{"task_id": task_id, "status": "integrating"} for task_id in partial])
     closure = RunClosure().evaluate(
         task_states,
@@ -165,6 +273,8 @@ def execute_run(
     terminal = closure.terminal_status
     blockers = blockers + [b for b in closure.blockers if b not in blockers]
 
+    if terminal == "complete":
+        terminal = RunTerminalStatus.SUCCEEDED.value
     summary = RunSummary(
         run_id=manifest.run_id,
         terminal_status=terminal,
@@ -183,7 +293,7 @@ def execute_run(
     )
     store.write_result(summary)
     store.update_manifest_status("done", terminal)
-    store.append_event("run_terminal", payload={"terminal_status": terminal})
+    store.append_event("run_terminal", payload={"terminal_status": terminal, "legacy_terminal_status": legacy_run_status(terminal)})
     return summary
 
 
@@ -199,6 +309,7 @@ def _execute_task_closed_loop(
     workspace_manager: WorkspaceManager,
     evidence_store: EvidenceStore,
     per_criterion_timeout_seconds: int,
+    max_attempts_per_task: int | None = None,
 ) -> tuple[str, list[str]]:
     task_id = task["task_id"]
     criteria = task.get("criteria", [])
@@ -210,11 +321,21 @@ def _execute_task_closed_loop(
     })
 
     if not criteria:
-        store.append_event("task_blocked", task_id=task_id, payload={"reason": "no criteria", "semantic_state": "blocked"})
+        store.append_event("task_blocked", task_id=task_id, payload={"reason": "no criteria", "semantic_state": TaskTerminalStatus.BLOCKED.value})
         return "failed", ["no criteria"]
 
     task_blockers: list[str] = []
     ctx = executor.initialize_task(ctx)
+
+    def _fail_task_for_stop(reason: str) -> TaskContext:
+        nonlocal task_blockers
+        task_blockers = [reason]
+        ctx.status = TaskStatus.BLOCKED
+        store.append_event("task_failed", task_id=task_id, attempt_id=(ctx.current_attempt.attempt_id if ctx.current_attempt else ""), payload={
+            "reason": reason,
+            "semantic_state": TaskTerminalStatus.FAILED.value,
+        })
+        return ctx
 
     def _attempt_runner(ctx: TaskContext, attempt: Any) -> TaskContext:
         nonlocal task_blockers
@@ -276,7 +397,7 @@ def _execute_task_closed_loop(
                 if review_decision["verdict"] == "accept":
                     ctx.status = TaskStatus.COMPLETE
                     store.append_event("review_accepted", task_id=task_id, attempt_id=attempt.attempt_id, payload={"verdict": "accept", "accepted_attempt_id": review_decision["accepted_attempt_id"]})
-                    store.append_event("task_completed", task_id=task_id, payload={"semantic_state": "complete", "winning_attempt_id": review_decision["accepted_attempt_id"]})
+                    store.append_event("task_completed", task_id=task_id, payload={"semantic_state": TaskTerminalStatus.SUCCEEDED.value, "winning_attempt_id": review_decision["accepted_attempt_id"]})
                     return ctx
                 attempt.state = attempt.state.VALIDATED_FAIL
                 attempt.failure_evidence = review_decision["failure_packet"]
@@ -291,7 +412,7 @@ def _execute_task_closed_loop(
                     store.append_event("review_requested", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "review"})
                     return executor._handle_validation_pass(ctx, attempt)
                 ctx.status = TaskStatus.COMPLETE
-                store.append_event("task_completed", task_id=task_id, payload={"semantic_state": "complete", "winning_attempt_id": attempt.attempt_id})
+                store.append_event("task_completed", task_id=task_id, payload={"semantic_state": TaskTerminalStatus.SUCCEEDED.value, "winning_attempt_id": attempt.attempt_id})
                 return ctx
 
         if result["attempt_record"].status == AdapterStatus.PARTIAL.value:
@@ -352,61 +473,86 @@ def _execute_task_closed_loop(
             ctx.status = TaskStatus.AWAITING_USER
             store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={
                 "reason": failure_packet.human_summary,
-                "semantic_state": "awaiting_user",
+                "semantic_state": TaskTerminalStatus.ESCALATED.value,
                 "question_packet": decision.question_packet,
             })
             store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={
                 "reason": failure_packet.human_summary,
-                "semantic_state": "awaiting_user",
+                "semantic_state": TaskTerminalStatus.ESCALATED.value,
                 "question_packet": decision.question_packet,
             })
             return ctx
 
         if decision.action == NextAction.BLOCKED:
             ctx.status = TaskStatus.BLOCKED
-            store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={
-                "reason": failure_packet.human_summary,
-                "semantic_state": "blocked",
-            })
-            store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={
-                "reason": failure_packet.human_summary,
-                "semantic_state": "blocked",
-            })
+            if decision.rule_fired.startswith("budget_exhausted:"):
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={
+                    "reason": failure_packet.human_summary,
+                    "semantic_state": TaskTerminalStatus.FAILED.value,
+                })
+            else:
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={
+                    "reason": failure_packet.human_summary,
+                    "semantic_state": TaskTerminalStatus.BLOCKED.value,
+                })
+                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={
+                    "reason": failure_packet.human_summary,
+                    "semantic_state": TaskTerminalStatus.BLOCKED.value,
+                })
             return ctx
 
         if decision.action == NextAction.REPAIR:
+            if max_attempts_per_task is not None and len(ctx.attempts) >= max_attempts_per_task:
+                return _fail_task_for_stop(f"attempt budget exhausted at {max_attempts_per_task} total attempts")
             store.append_event("repair_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "repair"})
             ctx = executor._start_repair(ctx)
             if ctx.status == TaskStatus.BLOCKED:
-                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
-                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": TaskTerminalStatus.FAILED.value})
             return ctx
         if decision.action == NextAction.DEBUG:
+            if max_attempts_per_task is not None and len(ctx.attempts) >= max_attempts_per_task:
+                return _fail_task_for_stop(f"attempt budget exhausted at {max_attempts_per_task} total attempts")
             store.append_event("debug_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "debug"})
             ctx = executor._start_debug(ctx)
             if ctx.status == TaskStatus.BLOCKED:
-                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
-                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": TaskTerminalStatus.FAILED.value})
             return ctx
         if decision.action == NextAction.SALVAGE:
+            if max_attempts_per_task is not None and len(ctx.attempts) >= max_attempts_per_task:
+                return _fail_task_for_stop(f"attempt budget exhausted at {max_attempts_per_task} total attempts")
             store.append_event("salvage_scheduled", task_id=task_id, attempt_id=attempt.attempt_id, payload={"attempt_type": "salvage"})
             ctx = executor._start_salvage(ctx)
             if ctx.status == TaskStatus.BLOCKED:
-                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
-                store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": "blocked"})
+                store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": failure_packet.human_summary, "semantic_state": TaskTerminalStatus.FAILED.value})
             return ctx
         ctx.status = TaskStatus.BLOCKED
-        store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": "blocked"})
-        store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": "blocked"})
+        store.append_event("task_failed", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": TaskTerminalStatus.BLOCKED.value})
+        store.append_event("task_blocked", task_id=task_id, attempt_id=attempt.attempt_id, payload={"reason": f"unsupported next action {decision.action.value}", "semantic_state": TaskTerminalStatus.BLOCKED.value})
         task_blockers = [f"unsupported next action {decision.action.value}"]
         return ctx
 
     ctx = executor.execute_task(ctx, attempt_runner=_attempt_runner)
     if ctx.status == TaskStatus.COMPLETE:
-        return "complete", []
+        return TaskTerminalStatus.SUCCEEDED.value, []
     if ctx.status in {TaskStatus.BUILDING, TaskStatus.REPAIRING, TaskStatus.DEBUGGING, TaskStatus.SALVAGING, TaskStatus.INTEGRATING}:
         return "partial", task_blockers or [ctx.status.value]
-    return "failed", task_blockers or [ctx.status.value]
+    if ctx.status == TaskStatus.AWAITING_USER:
+        return TaskTerminalStatus.ESCALATED.value, task_blockers or [ctx.status.value]
+    if ctx.status == TaskStatus.BLOCKED:
+        semantic_states = {
+            event.payload.get("semantic_state")
+            for event in reversed(store.read_events())
+            if event.task_id == task_id and event.type in {"task_failed", "task_blocked"}
+        }
+        if TaskTerminalStatus.CANCELLED.value in semantic_states:
+            return TaskTerminalStatus.CANCELLED.value, task_blockers or [ctx.status.value]
+        if TaskTerminalStatus.ESCALATED.value in semantic_states:
+            return TaskTerminalStatus.ESCALATED.value, task_blockers or [ctx.status.value]
+        if TaskTerminalStatus.FAILED.value in semantic_states:
+            return TaskTerminalStatus.FAILED.value, task_blockers or [ctx.status.value]
+        if TaskTerminalStatus.BLOCKED.value in semantic_states:
+            return TaskTerminalStatus.BLOCKED.value, task_blockers or [ctx.status.value]
+    return TaskTerminalStatus.FAILED.value, task_blockers or [ctx.status.value]
 
 
 def _materialize_workspace(
@@ -518,7 +664,11 @@ def _run_attempt(
             prior_attempts=[a.attempt_id for a in prior_attempts],
             failing_command="environment_provision",
             recent_lane=attempt_type.value,
-            hints=["environment_hint"] if env_meta.get("failure_class") == "environment_block" else [],
+            hints=(
+                ["environment_hint", "tooling_hint"]
+                if env_meta.get("failure_class") == "environment_block" and env_meta.get("missing_executables")
+                else (["environment_hint"] if env_meta.get("failure_class") == "environment_block" else [])
+            ),
             metadata={"environment": env_meta},
         )
         packet_path = evidence_store.store_evidence_packet(first_failure_packet)
@@ -573,6 +723,7 @@ def _run_attempt(
         run_id=run_id,
         prior_attempts=prior_attempt_records,
     )
+    strategy_memory = load_strategy_memory_artifact(store.run_root, strategy_memory_ref)
     execution_packet = build_execution_packet(
         run_id=run_id,
         task=task,
@@ -582,8 +733,61 @@ def _run_attempt(
         prior_attempts=prior_attempt_records,
         prior_evidence_refs=prior_evidence_refs,
         strategy_memory_ref=strategy_memory_ref,
+        strategy_memory=strategy_memory,
         repo_context=repo_context,
     )
+    retry_admission = execution_packet.history.get("retry_admission", {}) if isinstance(execution_packet.history, dict) else {}
+    if attempt_type != AttemptType.BUILD and retry_admission.get("admitted") is False:
+        required_deltas = [str(delta) for delta in retry_admission.get("required_deltas", []) if str(delta)]
+        blocked_reason = "retry admission rejected: required delta for retry not yet satisfied"
+        if required_deltas:
+            blocked_reason = f"{blocked_reason} ({'; '.join(required_deltas)})"
+        failure_packet = FailureEvidencePacket(
+            failure_class=FailureClass.STUCK_OR_REPEATING,
+            attempt_id=attempt_id,
+            task_id=task["task_id"],
+            criterion="retry_admission",
+            evidence_refs=list(prior_evidence_refs),
+            error_message=blocked_reason,
+            root_cause_hypothesis="required_delta_for_retry_not_structurally_satisfied",
+            prior_attempts=[a.attempt_id for a in prior_attempts],
+            failing_command="retry_admission",
+            recent_lane=attempt_type.value,
+            hints=["repeat_hint"],
+            metadata={"retry_admission": retry_admission},
+        )
+        packet_path = evidence_store.store_evidence_packet(failure_packet)
+        manifest_path = evidence_store.store_manifest(EvidenceManifest(attempt_id=attempt_id))
+        attempt_record = TaskAttemptRecord(
+            attempt_id=attempt_id,
+            task_id=task["task_id"],
+            attempt_index=attempt_index,
+            backend_id=adapter.backend_id(),
+            status=AdapterStatus.FAILED.value,
+            winning_attempt=False,
+            workspace_ref=workspace_record.path or "",
+            workspace_id=workspace_record.workspace_id or "",
+            workspace_mode=workspace_record.lineage_type.value,
+            parent_attempt_id=prior_attempts[-1].attempt_id if prior_attempts else "",
+            derived_from_attempt_ids=[a.attempt_id for a in prior_attempts[-1:]],
+            started_at=attempt_started,
+            finished_at=time.time(),
+            blockers=[blocked_reason],
+            error=blocked_reason,
+            failure_packet_ref=str(packet_path),
+            result_evidence_refs=[str(manifest_path)],
+            attempt_type=attempt_type.value,
+            metadata={
+                "criteria_results": [],
+                "attempt_type": attempt_type.value,
+                "workspace": workspace_record.to_dict(),
+                "review_required": task.get("review_required", False),
+                "execution_packet": execution_packet.to_dict(),
+                "retry_admission": retry_admission,
+            },
+        )
+        store.write_attempt(attempt_record)
+        return {"attempt_record": attempt_record, "criteria_results": [], "failure_packet": failure_packet}
 
     for crit in criteria:
         crit_id = crit.get("criterion_id", "")
@@ -604,14 +808,23 @@ def _run_attempt(
             "attempt_type": attempt_type.value,
         })
 
+        retry_guardrails = execution_packet.history.get("retry_guardrails", {}) if isinstance(execution_packet.history, dict) else {}
+        prompt_parts = [
+            f"Task: {execution_packet.task['goal']}",
+            f"Criterion: {crit_id}",
+            f"Attempt type: {attempt_type.value}",
+            f"Relevant files: {', '.join(execution_packet.repo_context.get('relevant_files', [])) or 'none'}",
+        ]
+        if retry_guardrails.get("must_materially_differ"):
+            prompt_parts.append("Rejected strategies exist. You must use a materially different strategy than the rejected attempt(s).")
+            required_deltas = retry_guardrails.get("required_deltas", [])
+            if required_deltas:
+                prompt_parts.append(f"Required delta(s): {', '.join(required_deltas)}")
+
+        prompt_text = "\n".join(prompt_parts)
         spec = AdapterRunSpec(
             spec_id=f"{task['task_id']}.{crit_id}",
-            prompt=(
-                f"Task: {execution_packet.task['goal']}\n"
-                f"Criterion: {crit_id}\n"
-                f"Attempt type: {attempt_type.value}\n"
-                f"Relevant files: {', '.join(execution_packet.repo_context.get('relevant_files', [])) or 'none'}"
-            ),
+            prompt=prompt_text,
             cwd=workspace_record.path or os.getcwd(),
             timeout_seconds=per_criterion_timeout_seconds,
             required_capabilities={Capability.SHELL_EXEC},
@@ -650,6 +863,12 @@ def _run_attempt(
             error = result.error
             summary = result.summary
             artifacts = list(result.artifact_paths)
+
+        bugfix_protocol_record = _extract_bugfix_protocol_record(artifacts) if is_bugfix_task(task) else None
+        bugfix_protocol_ref = (
+            _persist_reproduction_not_possible_record(store, task["task_id"], attempt_id, bugfix_protocol_record)
+            if bugfix_protocol_record is not None else ""
+        )
 
         verdict = "pass" if status == AdapterStatus.COMPLETE else "fail"
         target_checked = False
@@ -691,6 +910,44 @@ def _run_attempt(
         else:
             evidence_manifest.set_criterion_result(crit_id, verdict == "pass")
 
+        prompt_audit = PromptAuditRecord(
+            audit_id=f"audit-{attempt_id}-{crit_id}",
+            run_id=execution_packet.run_id,
+            task_id=task["task_id"],
+            attempt_id=attempt_id,
+            attempt_type=attempt_type.value,
+            prompt_policy={
+                "family": execution_packet.policy_snapshot.get("prompt_family", ""),
+                "version": "phase-4",
+                "role": attempt_type.value,
+                "model_route": execution_packet.policy_snapshot.get("model_route", "default"),
+                "tool_scope": list(execution_packet.policy_snapshot.get("tool_scope", [])),
+            },
+            prompt_instantiation={
+                "packet_ref": None,
+                "included_files": list(execution_packet.repo_context.get("relevant_files", [])),
+                "included_evidence_refs": list(execution_packet.history.get("prior_evidence_refs", [])),
+                "instructions_hash": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+                "rendered_prompt": prompt_text,
+                "criterion_id": crit_id,
+            },
+            model_execution={
+                "provider": adapter.backend_id(),
+                "model": execution_packet.policy_snapshot.get("model_route", "default"),
+                "status": status.value,
+                "started_at": attempt_started,
+                "finished_at": time.time(),
+            },
+            result={
+                "outcome": status.value,
+                "response_ref": None,
+                "files_touched": list(artifacts),
+                "commands_run": [cmd] if cmd else [],
+                "summary": summary,
+                "error": error,
+            },
+        )
+        prompt_audit_ref = persist_prompt_audit_record(store.run_root, task["task_id"], f"{attempt_id}-{crit_id}", prompt_audit.to_dict())
         per_criterion_results.append({
             "criterion_id": crit_id,
             "criterion_class": crit_class,
@@ -700,6 +957,7 @@ def _run_attempt(
             "error": error,
             "build_target_checked": target_checked,
             "build_target_exists": target_exists,
+            "prompt_audit_ref": prompt_audit_ref,
         })
         for artifact in artifacts:
             evidence_manifest.add_artifact(artifact)
@@ -712,6 +970,50 @@ def _run_attempt(
 
     final_status = AdapterStatus.COMPLETE if all_must_pass_passed and any_must_pass_present else AdapterStatus.FAILED
     manifest_path = evidence_store.store_manifest(evidence_manifest)
+    review_policy = normalize_review_policy(task)
+    validation_policy = build_validation_policy(task)
+    validator_chain = ValidatorChainArtifact(
+        artifact_id=f"validator-{attempt_id}",
+        run_id=execution_packet.run_id,
+        task_id=task["task_id"],
+        attempt_id=attempt_id,
+        review_policy=review_policy,
+        validation_policy=validation_policy,
+        results={
+            "required_commands": [{"command": cmd, "status": ("passed" if item["verdict"] == "pass" else "failed")} for cmd, item in zip(validation_policy["required_commands"], per_criterion_results)],
+            "must_pass": [item for item in per_criterion_results if item["criterion_class"] == "must_pass"],
+            "informational": [item for item in per_criterion_results if item["criterion_class"] != "must_pass"],
+            "manifest_ref": str(manifest_path),
+        },
+    )
+    validator_chain_ref = persist_validator_chain_artifact(store.run_root, task["task_id"], attempt_id, validator_chain.to_dict())
+    bugfix_state = execution_packet.history.get("current_bugfix_state", "") if isinstance(execution_packet.history, dict) else ""
+    if is_bugfix_task(task):
+        has_bugfix_protocol = bugfix_protocol_record is not None
+        prior_bugfix_state = execution_packet.history.get("current_bugfix_state")
+        if final_status == AdapterStatus.COMPLETE and prior_bugfix_state not in {"reproduced", "reproduction_not_possible", "verified"} and not has_bugfix_protocol:
+            final_status = AdapterStatus.FAILED
+            task_blockers.append("bugfix success rejected: reproduction evidence or justified reproduction_not_possible record required")
+            bugfix_state = "investigating"
+            if first_failure_packet is None:
+                first_failure_packet = FailureEvidencePacket(
+                    failure_class=FailureClass.RETRYABLE,
+                    attempt_id=attempt_id,
+                    task_id=task["task_id"],
+                    criterion="bugfix_protocol",
+                    evidence_refs=[str(manifest_path)],
+                    error_message="reproduction_evidence_required",
+                    root_cause_hypothesis="bugfix_protocol_requires_reproduction_before_fixing",
+                    prior_attempts=[a.attempt_id for a in prior_attempts],
+                    failing_command="bugfix_protocol",
+                    recent_lane=attempt_type.value,
+                    hints=["test_failure_hint"],
+                )
+                evidence_store.store_evidence_packet(first_failure_packet)
+        elif final_status == AdapterStatus.COMPLETE:
+            bugfix_state = "reproduction_not_possible" if has_bugfix_protocol or prior_bugfix_state == "reproduction_not_possible" else "verified"
+        else:
+            bugfix_state = "reproduced"
     execution_result = StructuredExecutionResult(
         run_id=execution_packet.run_id,
         task_id=task["task_id"],
@@ -721,10 +1023,14 @@ def _run_attempt(
         recommended_transition="accept" if final_status == AdapterStatus.COMPLETE else "repair",
         attempt_count=attempt_index + 1,
         final_attempt_id=attempt_id,
+        current_bugfix_state=bugfix_state,
         summary="; ".join(f"{item['criterion_id']}={item['verdict']}" for item in per_criterion_results),
         artifact_refs={
             "validator_report": str(manifest_path),
+            "validator_chain": validator_chain_ref,
+            "prompt_audits": [item["prompt_audit_ref"] for item in per_criterion_results if item.get("prompt_audit_ref")],
             "failure_packet": first_failure_packet.to_dict() if first_failure_packet else None,
+            "reproduction_not_possible_record": bugfix_protocol_ref or None,
         },
         metrics={
             "criterion_count": len(per_criterion_results),
@@ -754,12 +1060,30 @@ def _run_attempt(
             "criteria_results": per_criterion_results,
             "attempt_type": attempt_type.value,
             "workspace": workspace_record.to_dict(),
-            "review_required": task.get("review_required", False),
+            "review_required": review_policy["required"],
+            "review_policy": review_policy,
+            "validation_policy": validation_policy,
             "execution_packet": execution_packet.to_dict(),
             "structured_execution_result": execution_result.to_dict(),
+            "bugfix_protocol_record": bugfix_protocol_record,
+            "bugfix_protocol_ref": bugfix_protocol_ref,
         },
     )
     store.write_attempt(attempt_record)
+    _update_strategy_memory_after_attempt(
+        store=store,
+        task=task,
+        strategy_memory_ref=strategy_memory_ref,
+        execution_packet=execution_packet,
+        attempt_id=attempt_id,
+        attempt_type=attempt_type.value,
+        final_status=final_status,
+        failure_packet=first_failure_packet,
+        manifest_path=str(manifest_path),
+        per_criterion_results=per_criterion_results,
+        bugfix_protocol_record=bugfix_protocol_record,
+        bugfix_protocol_ref=bugfix_protocol_ref,
+    )
     return {
         "attempt_record": attempt_record,
         "criteria_results": per_criterion_results,
@@ -796,6 +1120,7 @@ def _run_review_attempt(
         run_id=run_id,
         prior_attempts=prior_attempt_records,
     )
+    strategy_memory = load_strategy_memory_artifact(store.run_root, strategy_memory_ref)
     review_packet = build_execution_packet(
         run_id=run_id,
         task=task,
@@ -805,15 +1130,17 @@ def _run_review_attempt(
         prior_attempts=prior_attempt_records,
         prior_evidence_refs=[ref for record in prior_attempt_records for ref in ([*record.result_evidence_refs] + ([record.failure_packet_ref] if record.failure_packet_ref else []))],
         strategy_memory_ref=strategy_memory_ref,
+        strategy_memory=strategy_memory,
         repo_context=repo_context,
+    )
+    review_prompt = (
+        f"Review task: {review_packet.task['goal']}\n"
+        f"Candidate attempt: {candidate_attempt_id}\n"
+        f"Relevant files: {', '.join(review_packet.repo_context.get('relevant_files', [])) or 'none'}"
     )
     review_spec = AdapterRunSpec(
         spec_id=f"{task['task_id']}.review",
-        prompt=(
-            f"Review task: {review_packet.task['goal']}\n"
-            f"Candidate attempt: {candidate_attempt_id}\n"
-            f"Relevant files: {', '.join(review_packet.repo_context.get('relevant_files', [])) or 'none'}"
-        ),
+        prompt=review_prompt,
         cwd=workspace_record.path or os.getcwd(),
         timeout_seconds=per_criterion_timeout_seconds,
         required_capabilities=set(),
@@ -853,6 +1180,65 @@ def _run_review_attempt(
         error = error or "review artifact missing or invalid"
         manifest.unresolved_risks.append("review_contract_invalid")
     manifest_path = evidence_store.store_manifest(manifest)
+    review_policy = normalize_review_policy(task)
+    validation_policy = build_validation_policy(task)
+    prompt_audit = PromptAuditRecord(
+        audit_id=f"audit-{attempt_id}",
+        run_id=review_packet.run_id,
+        task_id=task["task_id"],
+        attempt_id=attempt_id,
+        attempt_type=AttemptType.REVIEW.value,
+        prompt_policy={
+            "family": review_packet.policy_snapshot.get("prompt_family", ""),
+            "version": "phase-4",
+            "role": AttemptType.REVIEW.value,
+            "model_route": review_packet.policy_snapshot.get("model_route", "default"),
+            "tool_scope": list(review_packet.policy_snapshot.get("tool_scope", [])),
+        },
+        prompt_instantiation={
+            "packet_ref": None,
+            "included_files": list(review_packet.repo_context.get("relevant_files", [])),
+            "included_evidence_refs": list(review_packet.history.get("prior_evidence_refs", [])),
+            "instructions_hash": hashlib.sha256(review_prompt.encode("utf-8")).hexdigest(),
+            "rendered_prompt": review_prompt,
+            "candidate_attempt_id": candidate_attempt_id,
+        },
+        model_execution={
+            "provider": adapter.backend_id(),
+            "model": review_packet.policy_snapshot.get("model_route", "default"),
+            "status": status.value,
+            "started_at": attempt_started,
+            "finished_at": time.time(),
+        },
+        result={
+            "outcome": status.value,
+            "response_ref": None,
+            "files_touched": list(artifacts),
+            "commands_run": [],
+            "summary": summary,
+            "error": error,
+        },
+    )
+    prompt_audit_ref = persist_prompt_audit_record(store.run_root, task["task_id"], attempt_id, prompt_audit.to_dict())
+    validator_chain = ValidatorChainArtifact(
+        artifact_id=f"validator-{attempt_id}",
+        run_id=review_packet.run_id,
+        task_id=task["task_id"],
+        attempt_id=attempt_id,
+        review_policy=review_policy,
+        validation_policy=validation_policy,
+        results={
+            "required_commands": [{"command": command, "status": "pending_review"} for command in validation_policy["required_commands"]],
+            "must_pass": list(validation_policy["must_pass"]),
+            "informational": list(validation_policy["informational"]),
+            "manifest_ref": str(manifest_path),
+            "review_payload": review_payload,
+        },
+    )
+    validator_chain_ref = persist_validator_chain_artifact(store.run_root, task["task_id"], attempt_id, validator_chain.to_dict())
+    review_bugfix_state = ""
+    if is_bugfix_task(task):
+        review_bugfix_state = "verified" if status == AdapterStatus.COMPLETE and review_contract_ok else str(review_packet.history.get("current_bugfix_state") or "reproduced")
     execution_result = StructuredExecutionResult(
         run_id=review_packet.run_id,
         task_id=task["task_id"],
@@ -862,8 +1248,13 @@ def _run_review_attempt(
         recommended_transition="accept" if status == AdapterStatus.COMPLETE and review_contract_ok else "repair",
         attempt_count=attempt_index + 1,
         final_attempt_id=attempt_id,
+        current_bugfix_state=review_bugfix_state,
         summary=summary,
-        artifact_refs={"validator_report": str(manifest_path)},
+        artifact_refs={
+            "validator_report": str(manifest_path),
+            "validator_chain": validator_chain_ref,
+            "prompt_audit": prompt_audit_ref,
+        },
         metrics={"review_contract_valid": review_contract_ok},
     )
     attempt_record = TaskAttemptRecord(
@@ -889,17 +1280,141 @@ def _run_review_attempt(
             "review_payload": review_payload,
             "candidate_attempt_id": candidate_attempt_id,
             "review_contract_valid": review_contract_ok,
+            "review_policy": review_policy,
+            "validation_policy": validation_policy,
             "execution_packet": review_packet.to_dict(),
             "structured_execution_result": execution_result.to_dict(),
         },
     )
     store.write_attempt(attempt_record)
+    _update_strategy_memory_after_review(
+        store=store,
+        task=task,
+        strategy_memory_ref=strategy_memory_ref,
+        review_packet=review_packet,
+        attempt_id=attempt_id,
+        review_status=status,
+        review_contract_ok=review_contract_ok,
+        manifest_path=str(manifest_path),
+        review_payload=review_payload,
+        candidate_attempt_id=candidate_attempt_id,
+    )
     return {
         "attempt_record": attempt_record,
         "criteria_results": [{"review_contract_valid": review_contract_ok, "candidate_attempt_id": candidate_attempt_id}],
         "failure_packet": None,
     }
 
+
+def _update_strategy_memory_after_attempt(
+    *,
+    store: RunStore,
+    task: dict[str, Any],
+    strategy_memory_ref: str,
+    execution_packet: Any,
+    attempt_id: str,
+    attempt_type: str,
+    final_status: AdapterStatus,
+    failure_packet: FailureEvidencePacket | None,
+    manifest_path: str,
+    per_criterion_results: list[dict[str, Any]],
+    bugfix_protocol_record: dict[str, Any] | None,
+    bugfix_protocol_ref: str,
+) -> None:
+    memory = load_strategy_memory_artifact(store.run_root, strategy_memory_ref)
+    memory.setdefault("entries", [])
+    memory.setdefault("current_hypotheses", [])
+    memory.setdefault("reproduction", {"status": "missing", "evidence_refs": [], "summary": "", "reproduction_not_possible": None})
+    if is_bugfix_task(task):
+        if final_status == AdapterStatus.COMPLETE:
+            if bugfix_protocol_record is not None:
+                memory["current_bugfix_state"] = "reproduction_not_possible"
+                memory["reproduction"] = {
+                    "status": "reproduction_not_possible",
+                    "evidence_refs": [ref for ref in [manifest_path, bugfix_protocol_ref] if ref],
+                    "summary": str(bugfix_protocol_record.get("why") or ""),
+                    "reproduction_not_possible": dict(bugfix_protocol_record),
+                }
+            elif memory.get("reproduction", {}).get("status") not in {"captured", "reproduction_not_possible"}:
+                memory["current_bugfix_state"] = "investigating"
+                memory.setdefault("entries", []).append({
+                    "attempt_id": attempt_id,
+                    "attempt_type": attempt_type,
+                    "strategy": "success_without_reproduction_evidence",
+                    "outcome": "rejected",
+                    "reason": "reproduction_evidence_required",
+                    "do_not_repeat_without_change": True,
+                    "required_delta_for_retry": "capture durable reproduction evidence or persist a justified reproduction_not_possible decision before claiming success",
+                    "evidence_refs": [manifest_path],
+                })
+            else:
+                memory["current_bugfix_state"] = "verified"
+        else:
+            if failure_packet is not None and failure_packet.root_cause_hypothesis == "bugfix_protocol_requires_reproduction_before_fixing":
+                memory["current_bugfix_state"] = "investigating"
+            else:
+                memory["current_bugfix_state"] = "reproduced"
+                reproduction = memory.setdefault("reproduction", {})
+                reproduction["status"] = "captured"
+                reproduction["summary"] = "pre-fix failure captured"
+                evidence_refs = list(reproduction.get("evidence_refs") or [])
+                if failure_packet is not None:
+                    evidence_refs.extend([ref for ref in [manifest_path, *failure_packet.evidence_refs] if ref])
+                else:
+                    evidence_refs.append(manifest_path)
+                reproduction["evidence_refs"] = sorted(set(evidence_refs))
+
+    if final_status != AdapterStatus.COMPLETE:
+        entry = {
+            "attempt_id": attempt_id,
+            "attempt_type": attempt_type,
+            "strategy": f"{attempt_type}:{execution_packet.task.get('goal', '')}",
+            "outcome": "rejected",
+            "reason": "validation_failed",
+            "do_not_repeat_without_change": True,
+            "required_delta_for_retry": "materially different strategy with new evidence or code path",
+            "evidence_refs": [manifest_path] + ([failure_packet.failing_command] if failure_packet and failure_packet.failing_command else []),
+        }
+        memory["entries"].append(entry)
+        if failure_packet is not None and failure_packet.root_cause_hypothesis:
+            hypothesis = str(failure_packet.root_cause_hypothesis)
+            if hypothesis not in memory["current_hypotheses"]:
+                memory["current_hypotheses"].append(hypothesis)
+
+    persist_strategy_memory_artifact(store.run_root, strategy_memory_ref, memory)
+
+
+def _update_strategy_memory_after_review(
+    *,
+    store: RunStore,
+    task: dict[str, Any],
+    strategy_memory_ref: str,
+    review_packet: Any,
+    attempt_id: str,
+    review_status: AdapterStatus,
+    review_contract_ok: bool,
+    manifest_path: str,
+    review_payload: dict[str, Any] | None,
+    candidate_attempt_id: str,
+) -> None:
+    memory = load_strategy_memory_artifact(store.run_root, strategy_memory_ref)
+    memory.setdefault("entries", [])
+    if review_status == AdapterStatus.COMPLETE and review_contract_ok:
+        if is_bugfix_task(task) and memory.get("reproduction", {}).get("status") in {"captured", "reproduction_not_possible"}:
+            memory["current_bugfix_state"] = "verified"
+        persist_strategy_memory_artifact(store.run_root, strategy_memory_ref, memory)
+        return
+    memory["entries"].append({
+        "attempt_id": attempt_id,
+        "attempt_type": "review",
+        "strategy": f"review:{review_packet.task.get('goal', '')}",
+        "outcome": "rejected",
+        "reason": "review_rejected",
+        "do_not_repeat_without_change": True,
+        "required_delta_for_retry": "address reviewer rejection with materially different strategy",
+        "evidence_refs": [manifest_path, candidate_attempt_id],
+    })
+    persist_strategy_memory_artifact(store.run_root, strategy_memory_ref, memory)
 
 
 def _load_contract_artifact(artifact_paths: list[str], contract_type: str) -> dict[str, Any] | None:
@@ -915,6 +1430,26 @@ def _load_contract_artifact(artifact_paths: list[str], contract_type: str) -> di
         return data if isinstance(data, dict) else None
     return None
 
+
+def _extract_bugfix_protocol_record(artifact_paths: list[str]) -> dict[str, Any] | None:
+    payload = _load_contract_artifact(artifact_paths, "bugfix")
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("state") != "reproduction_not_possible":
+        return None
+    required = {"why", "approaches_tried", "surrogate_evidence", "post_fix_validation"}
+    if not required.issubset(payload):
+        return None
+    if not all(isinstance(payload.get(field), list) for field in ("approaches_tried", "surrogate_evidence", "post_fix_validation")):
+        return None
+    return payload
+
+
+def _persist_reproduction_not_possible_record(store: RunStore, task_id: str, attempt_id: str, payload: dict[str, Any]) -> str:
+    path = Path(store.run_root) / "artifacts" / task_id / f"reproduction-not-possible-{attempt_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return str(path.relative_to(Path(store.run_root)))
 
 
 def _review_contract_satisfied(payload: dict[str, Any] | None) -> bool:
@@ -1284,12 +1819,19 @@ def _terminate(
     *,
     blocked: str = "",
 ) -> RunSummary:
+    canonical_terminal = {
+        "failed": RunTerminalStatus.FAILED.value,
+        "blocked": RunTerminalStatus.BLOCKED.value,
+        "escalated": RunTerminalStatus.ESCALATED.value,
+        "cancelled": RunTerminalStatus.CANCELLED.value,
+        "complete": RunTerminalStatus.SUCCEEDED.value,
+    }.get(terminal_status, terminal_status)
     summary = RunSummary(
         run_id=manifest.run_id,
-        terminal_status=terminal_status,
+        terminal_status=canonical_terminal,
         blocked_reason=blocked,
         total_runtime_seconds=time.time() - start,
     )
     store.write_result(summary)
-    store.update_manifest_status("blocked", terminal_status)
+    store.update_manifest_status("blocked", canonical_terminal)
     return summary

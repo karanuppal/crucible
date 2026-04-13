@@ -8,6 +8,7 @@ import pytest
 from crucible.planning import PlanningError
 from crucible.runtime.preflight import lint_plan
 from crucible.runtime.run_store import create_run_store
+from crucible.runtime.statuses import RunTerminalStatus
 
 from crucible.runtime.openclaw_tool import execute, TOOL_SCHEMA
 
@@ -107,10 +108,10 @@ class TestRunMode:
             "plan": _good_plan(),
             "runs_dir": str(tmp_path / "runs"),
         })
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert out["plan_status"] == "validated"
-        assert out["plan"]["tasks"][0]["review_policy"]["tier"] == "standard"
-        assert "t1" in out["completed_tasks"]
+        assert out["plan"]["tasks"][0]["review_policy"]["tier"] == "none"
+        assert out["completed_tasks"] == ["t1"]
     
     def test_run_failing_returns_terminal_failed(self, tmp_path):
         plan = _good_plan()
@@ -121,7 +122,7 @@ class TestRunMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["status"] == "terminal"
-        assert out["terminal_status"] == "failed"
+        assert out["terminal_status"] == RunTerminalStatus.FAILED.value
     
     def test_run_lint_failed_propagates(self, tmp_path):
         out = execute({
@@ -178,7 +179,7 @@ class TestStatusMode:
         assert out["is_terminal"] is True
         assert out["plan_present"] is True
         assert out["plan_status"] == "validated"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
     
     def test_status_unknown_returns_error(self, tmp_path):
         out = execute({
@@ -228,7 +229,7 @@ class TestResumeMode:
         out = execute({"mode": "resume", "run_id": run_id, "runs_dir": runs_dir})
         assert out["status"] == "ok"
         assert out["plan_status"] == "validated"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
     
     def test_run_can_use_openclaw_bridge_backend(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -256,7 +257,7 @@ class TestResumeMode:
         })
 
         assert out["status"] == "ok", f"got {out}"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
 
@@ -302,9 +303,39 @@ class TestResumeMode:
 
         assert os.path.isfile(result_path), "detached bridge-backed run never completed"
         result = json.loads(open(result_path).read())
-        assert result["terminal_status"] == "complete"
+        assert result["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
+
+    def test_detach_persists_canonical_run_failed_on_background_exception(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+
+        def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
+            return f"oc-session-{spec_id}"
+
+        def fake_wait(session_id, timeout):
+            raise RuntimeError("detached wait blew up")
+
+        out = execute({
+            "mode": "run",
+            "plan": _good_plan(),
+            "runs_dir": runs_dir,
+            "detach": True,
+            "openclaw_spawn_callable": fake_spawn,
+            "openclaw_wait_callable": fake_wait,
+        })
+
+        result_path = os.path.join(out["run_root"], "result.json")
+        for _ in range(50):
+            if os.path.isfile(result_path):
+                break
+            time.sleep(0.02)
+
+        assert os.path.isfile(result_path), "detached bridge-backed failure never persisted"
+        result = json.loads(open(result_path).read())
+        manifest = json.loads(open(os.path.join(out["run_root"], "run.json")).read())
+        assert result["terminal_status"] == RunTerminalStatus.FAILED.value
+        assert manifest["current_status"] == RunTerminalStatus.FAILED.value
 
     def test_resume_can_use_openclaw_bridge_backend(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -339,7 +370,7 @@ class TestResumeMode:
         })
 
         assert out["status"] == "ok", f"got {out}"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
         assert out["run_root"] == manifest.run_root

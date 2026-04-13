@@ -15,6 +15,7 @@ from crucible.runtime.preflight import lint_plan
 from crucible.runtime.run_executor import execute_run
 from crucible.runtime.run_store import create_run_store
 from crucible.runtime.local_shell_adapter import LocalShellAdapter
+from crucible.runtime.statuses import RunTerminalStatus
 
 
 CLI = [sys.executable, "-m", "crucible.runtime.cli"]
@@ -69,7 +70,7 @@ class TestResumeIncremental:
             adapter_factory=lambda s: [LocalShellAdapter()],
             workspace_root=str(tmp_path),
         )
-        assert summary1.terminal_status == "complete"
+        assert summary1.terminal_status == RunTerminalStatus.SUCCEEDED.value
         assert counter.read_text().strip() == "1", f"counter wrong: {counter.read_text()}"
         
         # The result.json now exists; manually clear it so resume sees a

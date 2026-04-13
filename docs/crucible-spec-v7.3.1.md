@@ -14,7 +14,7 @@
 - [x] Add explicit boundary section for loop/state-machine/LLM/prompt ownership
 - [x] Add stronger markdown architecture flow
 - [x] Define minimal contracts for `plan.json`, `ExecutionPacket`, prompt/audit record, and strategy memory
-- [x] Define embedding contract for OpenClaw, Claude Code, and Codex CLI
+- [x] Define embedding contract for OpenClaw as the primary front door
 - [x] Add canonical `ExecutionResult` / `AttemptResult` contracts and run/task terminal enums
 - [x] Add explicit state-transition semantics for control plane and bugfix protocol
 - [x] Add strict backend-normalization appendix and prompt/audit persistence policy
@@ -30,7 +30,7 @@ Its job is not to be a chat UI and not to be a thin wrapper around a coding agen
 
 The intended product truth is:
 
-> OpenClaw, Claude Code, and Codex CLI may be how the user enters, but Crucible is the execution substrate underneath.
+> OpenClaw is the primary user-facing front door, and Crucible is the execution substrate underneath.
 
 This document is standalone. Older specs may be useful historical context, but they are not normative for implementation.
 
@@ -613,13 +613,13 @@ Required invariants:
 
 ---
 
-## 7. Embedding contract: how Crucible sits underneath front doors
+## 7. Embedding contract: OpenClaw as the front door
 
 ### 7.1 General rule
 
-OpenClaw, Claude Code, and Codex CLI are **entry surfaces or worker backends**, not alternate truth systems.
+OpenClaw is the primary user-facing front door for Crucible.
 
-All three must converge on the same durable Crucible concepts:
+OpenClaw must converge on the same durable Crucible concepts:
 - run
 - plan
 - task
@@ -628,7 +628,7 @@ All three must converge on the same durable Crucible concepts:
 - status/watch/resume
 - terminal result classification
 
-### 7.2 OpenClaw
+### 7.2 OpenClaw contract
 
 OpenClaw integration is already partially real via:
 - `src/crucible/runtime/openclaw_tool.py`
@@ -648,76 +648,43 @@ Contract:
   - result classification
   - status/watch/resume behavior
 
-### 7.3 Claude Code
+### 7.3 Required embedding boundary
 
-Claude Code should be supported as a backend/worker surface under Crucible, not as the system-of-record.
+The OpenClaw front door may differ in UX from lower-level execution mechanisms, but not in authority.
 
-Contract:
-- Crucible control plane builds the `ExecutionPacket`
-- Crucible selects prompt family/model/budget policy
-- Claude Code executes task-local attempts from that packet
-- returned outputs are normalized into Crucible attempt/audit/evidence records
-- resume/status truth stays in Crucible, not inside Claude Code session history
-
-### 7.4 Codex CLI
-
-Codex CLI should follow the same contract as Claude Code.
-
-Contract:
-- Crucible may invoke Codex CLI as an execution backend for build/repair/review roles
-- Codex CLI receives task-local instructions derived from the `ExecutionPacket`
-- file edits, tool runs, and summaries are ingested back into Crucible artifacts and attempt records
-- Crucible remains responsible for retry policy, validation policy, and terminal classification
-
-### 7.5 Required embedding boundary
-
-Front doors may differ in UX, but not in authority.
-
-Front doors can:
+OpenClaw can:
 - submit work
 - observe progress
 - resume/steer/cancel
-- host an execution backend
+- host or invoke execution backends underneath Crucible
 
-Front doors cannot become the authoritative owner of:
+OpenClaw cannot become the authoritative owner of:
 - run state
 - policy snapshots
 - attempt ledger
 - evidence chain
 - terminal semantics
 
-### 7.6 Backend normalization appendix
+### 7.4 Backend normalization appendix
 
-This appendix is the minimum backend contract for OpenClaw, Claude Code, and Codex CLI. The backend may internally perform many tool/model steps, but Crucible only recognizes a backend invocation as complete when one normalized `AttemptResult` has been emitted and durably stored.
+This appendix defines the minimum normalized contract that Crucible must persist for any execution performed underneath the OpenClaw front door. Backend-specific details are intentionally deferred.
 
-Minimum normalized per-attempt fields required from every backend:
+Minimum normalized per-attempt fields required:
 - attempt identity: `attempt_id`, `run_id`, `task_id`, `attempt_index`, `attempt_type`, `backend`
 - lifecycle: `status`, `started_at`, `finished_at`, `duration_seconds`
 - work summary: `summary`, `files_touched`, `commands_run`, `exit_code`
 - evidence: `evidence_refs`, `raw_output_ref`
-- model/backend metadata: provider/backend name, model if applicable, `performed_internal_multistep_reasoning`, `performed_file_mutation`, `performed_command_execution`, internal step count if known
+- model/backend metadata: provider/backend name if available, `performed_internal_multistep_reasoning`, `performed_file_mutation`, `performed_command_execution`, internal step count if known
 - recommendation: one control-plane action enum value
 
-Backend-specific notes:
-
-**OpenClaw**
-- May arrive through `src/crucible/runtime/openclaw_tool.py` and bridge-backed execution plumbing.
+OpenClaw-specific notes:
+- Execution may arrive through `src/crucible/runtime/openclaw_tool.py` and bridge-backed execution plumbing.
 - If OpenClaw spawns a sub-agent or bridged worker, the spawn/wait transcript refs and any worker-produced artifact refs must be folded into the single normalized `AttemptResult`.
 - OpenClaw-native session IDs are embedding metadata only; they are never a substitute for Crucible attempt IDs.
 
-**Claude Code**
-- May perform internal tool-use loops, but Crucible still sees one attempt unless Crucible itself explicitly asks for multiple attempts.
-- Claude Code must surface the final files touched, commands run, raw transcript/response ref, and model identity for the attempt.
-- Hidden chain-of-thought is not required; observable action/evidence outputs are required.
-
-**Codex CLI**
-- Same normalization rule as Claude Code: native multi-step behavior is allowed inside one backend attempt, but final persistence must collapse to one canonical `AttemptResult`.
-- Codex CLI must report actual command executions and file mutations, not only narrative summaries.
-- If Codex cannot provide a field natively, the adapter must synthesize the canonical field from observable artifacts or mark it explicitly unavailable; silent omission is not allowed.
-
 Authority rule:
-- backends may sub-loop internally
-- adapters normalize the backend transcript into one `AttemptResult`
+- underlying backends may sub-loop internally
+- adapters normalize backend behavior into one `AttemptResult`
 - the control plane remains the only owner of retry counts, attempt boundaries, and terminal classification
 
 ---
@@ -805,17 +772,16 @@ The sequence below preserves the v7.2 build order, but makes each phase implemen
 ### Build
 - stable library API for embedding
 - explicit OpenClaw entry docs
-- Claude Code backend adapter path
-- Codex CLI backend adapter path
-- UX polish for `run/status/watch/resume`
+- OpenClaw-first UX polish for `run/status/watch/resume`
+- normalized adapter boundary for execution performed underneath OpenClaw
 
 ### Tests required
-- all supported entry surfaces map to the same run semantics
-- same run can be inspected independent of originating front door
+- OpenClaw maps to the same durable run semantics across submit/status/watch/resume
+- the same run can be inspected consistently regardless of which OpenClaw surface initiated it
 
 ### Exit criteria
-- front doors differ only in invocation UX and backend choice
-- Crucible remains the shared substrate underneath them
+- OpenClaw is a clear front door over the same durable Crucible substrate
+- invocation UX differs by OpenClaw surface, but runtime truth does not
 
 ## Phase 6 — Evaluation and hardening
 
@@ -848,7 +814,7 @@ Additional hard gates:
 - no “task-aware execution” claim until `ExecutionPacket` is real and used
 - no “prompt-managed” claim until prompt policy snapshots and audit records persist on disk
 - no “strategy memory” claim until rejection ledger artifacts affect retries
-- no “front-door convergence” claim until OpenClaw/Claude Code/Codex CLI all map to the same durable run semantics
+- no “OpenClaw front door” claim until OpenClaw submit/status/watch/resume all map to the same durable run semantics
 
 ---
 
@@ -860,7 +826,7 @@ Capabilities should be prioritized in this order:
 3. task-aware execution packet
 4. semantic retry memory + bug-fix protocol
 5. prompt/audit policy system
-6. front-door/backend convergence
+6. OpenClaw front-door productization
 7. benchmark hardening
 
 Reason: without durable truth + plan gate + real task packet, everything above is theater.
@@ -870,7 +836,7 @@ Reason: without durable truth + plan gate + real task packet, everything above i
 ## 11. Final design conclusions
 
 1. Crucible is library-first and runtime-first.
-2. It should sit underneath OpenClaw, Claude Code, and Codex CLI rather than be replaced by them.
+2. It should sit underneath OpenClaw as the primary front door rather than be replaced by front-door-specific runtime logic.
 3. It should be two nested state machines: control plane outside, execution core inside.
 4. Prompt policy belongs to the control plane.
 5. Prompt instantiation and artifact-producing LLM calls belong to the execution core.

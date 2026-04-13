@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from crucible.runtime.statuses import RunTerminalStatus, TaskTerminalStatus
+
 
 @dataclass
 class RunClosureResult:
@@ -26,8 +28,11 @@ class RunClosure:
         post_validation_passed: bool = True,
     ) -> RunClosureResult:
         blockers: list[str] = []
-        completed = [t["task_id"] for t in task_states if t.get("status") == "complete"]
-        failed = [t["task_id"] for t in task_states if t.get("status") == "blocked"]
+        completed = [t["task_id"] for t in task_states if t.get("status") == TaskTerminalStatus.SUCCEEDED.value]
+        blocked = [t["task_id"] for t in task_states if t.get("status") == TaskTerminalStatus.BLOCKED.value]
+        failed = [t["task_id"] for t in task_states if t.get("status") == TaskTerminalStatus.FAILED.value]
+        escalated = [t["task_id"] for t in task_states if t.get("status") == TaskTerminalStatus.ESCALATED.value]
+        cancelled = [t["task_id"] for t in task_states if t.get("status") == TaskTerminalStatus.CANCELLED.value]
         active = [
             t["task_id"]
             for t in task_states
@@ -37,11 +42,19 @@ class RunClosure:
 
         if awaiting:
             blockers.append(f"awaiting_user:{','.join(awaiting)}")
-            return RunClosureResult("blocked", blockers=blockers, completed_tasks=completed, failed_tasks=awaiting)
+            return RunClosureResult(RunTerminalStatus.BLOCKED.value, blockers=blockers, completed_tasks=completed, failed_tasks=awaiting)
+        if blocked:
+            blockers.append(f"blocked:{','.join(blocked)}")
+            return RunClosureResult(RunTerminalStatus.BLOCKED.value, blockers=blockers, completed_tasks=completed, failed_tasks=blocked)
+        if escalated:
+            blockers.append(f"escalated:{','.join(escalated)}")
+            return RunClosureResult(RunTerminalStatus.ESCALATED.value, blockers=blockers, completed_tasks=completed, failed_tasks=escalated)
+        if cancelled:
+            blockers.append(f"cancelled:{','.join(cancelled)}")
+            return RunClosureResult(RunTerminalStatus.CANCELLED.value, blockers=blockers, completed_tasks=completed, failed_tasks=cancelled)
         if failed:
-            blockers.append(f"blocked:{','.join(failed)}")
-            terminal = "partial" if completed else "failed"
-            return RunClosureResult(terminal, blockers=blockers, completed_tasks=completed, failed_tasks=failed)
+            blockers.append(f"failed:{','.join(failed)}")
+            return RunClosureResult(RunTerminalStatus.FAILED.value, blockers=blockers, completed_tasks=completed, failed_tasks=failed)
         if active:
             return RunClosureResult("partial", completed_tasks=completed, partial_tasks=active)
         if integration_required and not integration_complete:
@@ -49,11 +62,11 @@ class RunClosure:
             return RunClosureResult("partial", blockers=blockers, completed_tasks=completed)
         if post_validation_required and not integration_required:
             blockers.append("post_validation_requires_integration")
-            return RunClosureResult("failed", blockers=blockers, completed_tasks=completed)
+            return RunClosureResult(RunTerminalStatus.FAILED.value, blockers=blockers, completed_tasks=completed)
         if post_validation_required and not integration_complete:
             blockers.append("post_validation_waiting_on_integration")
             return RunClosureResult("partial", blockers=blockers, completed_tasks=completed)
         if post_validation_required and not post_validation_passed:
             blockers.append("post_validation_failed")
-            return RunClosureResult("failed", blockers=blockers, completed_tasks=completed)
-        return RunClosureResult("complete", completed_tasks=completed)
+            return RunClosureResult(RunTerminalStatus.FAILED.value, blockers=blockers, completed_tasks=completed)
+        return RunClosureResult(RunTerminalStatus.SUCCEEDED.value, completed_tasks=completed)

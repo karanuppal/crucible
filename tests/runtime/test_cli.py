@@ -7,6 +7,8 @@ import sys
 import pytest
 
 from crucible.runtime.cli import build_parser, main
+from crucible.runtime.run_store import RunSummary, create_run_store
+from crucible.runtime.statuses import RunTerminalStatus
 
 
 def _good_plan_json(tmp_path):
@@ -148,6 +150,41 @@ class TestRun:
         assert manifest["plan_status"] == "missing"
 
 
+def _create_terminal_run(tmp_path, terminal_status: str) -> str:
+    plan = {
+        "spec": "terminal snapshot",
+        "project_id": "p1",
+        "build_id": "b1",
+        "tasks": [{
+            "task_id": "t1",
+            "description": "d",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "non-path-target",
+                    "verification_command": "echo OK",
+                    "expected_output": "OK",
+                },
+            }],
+            "role": "builder",
+            "intensity_hint": "S",
+        }],
+    }
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=plan["project_id"],
+        build_id=plan["build_id"],
+        spec_text=plan["spec"],
+        task_plan=plan,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "workspace"),
+    )
+    store.write_result(RunSummary(run_id=manifest.run_id, terminal_status=terminal_status))
+    store.update_manifest_status("done", terminal_status)
+    return manifest.run_id
+
+
 class TestStatus:
     def test_unknown_run_id_exits_four(self, tmp_path):
         rc = main(["--runs-dir", str(tmp_path / "runs"), "status", "nonexistent"])
@@ -178,6 +215,17 @@ class TestStatus:
         assert parsed["plan_status"] == "validated"
         assert parsed["plan"]["run_id"] == run_id
 
+    @pytest.mark.parametrize("terminal_status", [
+        RunTerminalStatus.FAILED.value,
+        RunTerminalStatus.BLOCKED.value,
+        RunTerminalStatus.ESCALATED.value,
+        RunTerminalStatus.CANCELLED.value,
+    ])
+    def test_status_exit_code_handles_canonical_terminal_failures(self, tmp_path, terminal_status):
+        run_id = _create_terminal_run(tmp_path, terminal_status)
+        rc = main(["--runs-dir", str(tmp_path / "runs"), "status", run_id])
+        assert rc == 3
+
 
 class TestWatch:
     def test_unknown_run_exits_four(self, tmp_path):
@@ -200,6 +248,17 @@ class TestWatch:
         assert lines[0]["plan_present"] is True
         assert lines[0]["plan_status"] == "validated"
         assert any(line.get("type") == "plan_validated" for line in lines[1:])
+
+    @pytest.mark.parametrize("terminal_status", [
+        RunTerminalStatus.FAILED.value,
+        RunTerminalStatus.BLOCKED.value,
+        RunTerminalStatus.ESCALATED.value,
+        RunTerminalStatus.CANCELLED.value,
+    ])
+    def test_watch_exit_code_handles_canonical_terminal_failures(self, tmp_path, terminal_status):
+        run_id = _create_terminal_run(tmp_path, terminal_status)
+        rc = main(["--runs-dir", str(tmp_path / "runs"), "watch", run_id, "--jsonl", "--from", "0"])
+        assert rc == 3
 
     def test_initial_execution_fails_closed_if_plan_deleted_before_execute(self, tmp_path):
         from crucible.runtime.local_shell_adapter import LocalShellAdapter
@@ -228,7 +287,7 @@ class TestWatch:
             workspace_root=str(tmp_path / "workspace"),
         )
 
-        assert summary.terminal_status == "failed"
+        assert summary.terminal_status == "run_failed"
         assert "validated plan required before execution" in summary.blocked_reason
         assert any(event.type == "plan_gate_failed" for event in store.read_events())
 

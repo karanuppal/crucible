@@ -9,6 +9,7 @@ sees a normal sync adapter.
 import pytest
 
 from crucible.accelerators.adapters import AdapterStatus
+from crucible.runtime.statuses import RunTerminalStatus
 from crucible.runtime.openclaw_bridge import (
     SimulatedOpenClawBridge, SessionsSpawnBridge, BridgeBackedAdapter,
 )
@@ -66,7 +67,7 @@ class TestSimulatedBridgeInExecutor:
             store=store, manifest=manifest, plan=plan,
             adapter_factory=factory,
         )
-        assert summary.terminal_status == "complete", f"got {summary.to_dict()}"
+        assert summary.terminal_status == RunTerminalStatus.SUCCEEDED.value, f"got {summary.to_dict()}"
         assert "t1" in summary.completed_tasks
     
     def test_simulated_bridge_failed_outcome_marks_failed(self, tmp_path):
@@ -85,7 +86,7 @@ class TestSimulatedBridgeInExecutor:
             store=store, manifest=manifest, plan=plan,
             adapter_factory=factory,
         )
-        assert summary.terminal_status == "failed"
+        assert summary.terminal_status == RunTerminalStatus.FAILED.value
 
 
 class TestSessionsSpawnBridgeInExecutor:
@@ -93,14 +94,14 @@ class TestSessionsSpawnBridgeInExecutor:
         """Simulate a real OpenClaw embedder providing spawn + wait callables."""
         plan = _good_plan()
         store, manifest = _store(tmp_path, plan)
-        
+
         spawn_calls: list[str] = []
         wait_calls: list[str] = []
-        
+
         def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
             spawn_calls.append(spec_id)
             return f"oc-session-{spec_id}"
-        
+
         def fake_wait(session_id, timeout):
             wait_calls.append(session_id)
             return {
@@ -108,7 +109,7 @@ class TestSessionsSpawnBridgeInExecutor:
                 "artifact_paths": ["src/built.py"],
                 "summary": "build done",
             }
-        
+
         def factory(s):
             bridge = SessionsSpawnBridge(
                 s,
@@ -116,27 +117,27 @@ class TestSessionsSpawnBridgeInExecutor:
                 wait_callable=fake_wait,
             )
             return [BridgeBackedAdapter(bridge)]
-        
+
         summary = execute_run(
             store=store, manifest=manifest, plan=plan,
             adapter_factory=factory,
         )
-        
-        assert summary.terminal_status == "complete"
+
+        assert summary.terminal_status == RunTerminalStatus.SUCCEEDED.value
         assert len(spawn_calls) >= 1
         assert len(wait_calls) >= 1
         assert wait_calls[0].startswith("oc-session-")
-    
+
     def test_sessions_spawn_failed_path(self, tmp_path):
         plan = _good_plan()
         store, manifest = _store(tmp_path, plan)
-        
+
         def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
             return f"oc-{spec_id}"
-        
+
         def fake_wait(session_id, timeout):
             return {"status": "failed", "error": "tests blew up"}
-        
+
         def factory(s):
             bridge = SessionsSpawnBridge(
                 s,
@@ -144,23 +145,23 @@ class TestSessionsSpawnBridgeInExecutor:
                 wait_callable=fake_wait,
             )
             return [BridgeBackedAdapter(bridge)]
-        
+
         summary = execute_run(
             store=store, manifest=manifest, plan=plan,
             adapter_factory=factory,
         )
-        assert summary.terminal_status == "failed"
-    
+        assert summary.terminal_status == RunTerminalStatus.FAILED.value
+
     def test_spawn_exception_marks_run_failed(self, tmp_path):
         plan = _good_plan()
         store, manifest = _store(tmp_path, plan)
-        
+
         def crashing_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
             raise RuntimeError("openclaw down")
-        
+
         def fake_wait(session_id, timeout):
             return {"status": "complete"}
-        
+
         def factory(s):
             bridge = SessionsSpawnBridge(
                 s,
@@ -168,9 +169,9 @@ class TestSessionsSpawnBridgeInExecutor:
                 wait_callable=fake_wait,
             )
             return [BridgeBackedAdapter(bridge)]
-        
+
         summary = execute_run(
             store=store, manifest=manifest, plan=plan,
             adapter_factory=factory,
         )
-        assert summary.terminal_status == "failed"
+        assert summary.terminal_status == RunTerminalStatus.FAILED.value

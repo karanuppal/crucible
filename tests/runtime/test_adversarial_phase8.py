@@ -147,7 +147,7 @@ class TestAdapterFailureModes:
             raise RuntimeError("factory exploded")
         
         summary = execute_run(store=store, manifest=manifest, plan=plan, adapter_factory=boom)
-        assert summary.terminal_status == "failed"
+        assert summary.terminal_status == "run_failed"
         assert "factory exploded" in summary.blocked_reason
     
     def test_no_backends_blocks_run(self, tmp_path):
@@ -165,7 +165,7 @@ class TestAdapterFailureModes:
         }
         store, manifest = _store(tmp_path, plan)
         summary = execute_run(store=store, manifest=manifest, plan=plan, adapter_factory=lambda s: [])
-        assert summary.terminal_status == "blocked"
+        assert summary.terminal_status == "run_blocked"
     
     def test_spawn_exception_marks_criterion_failed(self, tmp_path):
         plan = {
@@ -185,7 +185,7 @@ class TestAdapterFailureModes:
             store=store, manifest=manifest, plan=plan,
             adapter_factory=lambda s: [_CrashingFactoryAdapter()],
         )
-        assert summary.terminal_status == "failed"
+        assert summary.terminal_status == "run_failed"
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -1,0 +1,24 @@
+{
+  "spec": "Resolve django__django-11292",
+  "project_id": "swebench-verified-django",
+  "build_id": "django__django-11292",
+  "tasks": [
+    {
+      "task_id": "django__django-11292-task",
+      "description": "Resolve django__django-11292",
+      "criteria": [
+        {
+          "criterion_id": "c1",
+          "criterion_class": "must_pass",
+          "triple": {
+            "build_target": "django/core/management/base.py",
+            "verification_command": "python -m pytest tests/user_commands/tests.py -q -k test_skip_checks",
+            "expected_output": "1 passed"
+          }
+        }
+      ],
+      "role": "debugger",
+      "intensity_hint": "M"
+    }
+  ]
+}
