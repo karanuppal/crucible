@@ -71,7 +71,7 @@ GENERIC_EXPECTED_OUTPUTS = {
     "success", "done", "passes", "pass", "ok", "okay", "complete", "finished",
 }
 
-VALID_ROLES = {"builder", "reviewer", "debugger", "researcher", "integrator", "salvage"}
+VALID_ROLES = {"builder", "reviewer", "debugger", "researcher", "integrator", "salvage", "bugfix"}
 VALID_INTENSITIES = {"S", "M", "L"}
 VALID_CRITERION_CLASSES = {"must_pass", "informational"}
 
@@ -360,15 +360,53 @@ def lint_plan(plan: dict[str, Any]) -> LintResult:
                 task_id=task_id,
             ))
         
-        normalized_tasks.append({
+        raw_dependencies = task.get("dependencies", [])
+        if raw_dependencies is None:
+            raw_dependencies = []
+        if not isinstance(raw_dependencies, list):
+            findings.append(LintFinding(
+                severity=LintSeverity.ERROR,
+                code="DEPENDENCIES_NOT_LIST",
+                message=f"task {task_id} dependencies must be a list",
+                task_id=task_id,
+            ))
+            raw_dependencies = []
+        dependencies = [str(dep).strip() for dep in raw_dependencies if str(dep).strip()]
+        for dep in dependencies:
+            if dep == task_id:
+                findings.append(LintFinding(
+                    severity=LintSeverity.ERROR,
+                    code="SELF_DEPENDENCY",
+                    message=f"task {task_id} cannot depend on itself",
+                    task_id=task_id,
+                ))
+
+        review_policy = task.get("review_policy") if isinstance(task.get("review_policy"), dict) else {}
+        if isinstance(task.get("review_required"), bool):
+            review_required = task.get("review_required")
+        elif isinstance(review_policy.get("required"), bool):
+            review_required = review_policy.get("required")
+        else:
+            review_required = role != "researcher"
+        review_tier = review_policy.get("tier") if isinstance(review_policy.get("tier"), str) and review_policy.get("tier", "").strip() else ("standard" if review_required else "none")
+
+        normalized_task = {
             "task_id": task_id.strip(),
             "description": description.strip(),
+            "dependencies": dependencies,
             "criteria": normalized_criteria,
             "role": role,
+            "task_type": task.get("task_type", role).strip() if isinstance(task.get("task_type"), str) else role,
+            "bugfix": task.get("bugfix", {}) if isinstance(task.get("bugfix"), dict) else {},
             "intensity_hint": intensity,
             "spec_command": task.get("spec_command", "").strip() if isinstance(task.get("spec_command"), str) else "",
             "retryable": task.get("retryable", True) if isinstance(task.get("retryable"), bool) else True,
-        })
+        }
+        if isinstance(task.get("review_required"), bool):
+            normalized_task["review_required"] = review_required
+        if isinstance(task.get("review_policy"), dict):
+            normalized_task["review_policy"] = {"required": review_required, "tier": review_tier.strip().lower()}
+        normalized_tasks.append(normalized_task)
     
     # Cross-task duplicate triple check
     for key, cids in seen_triple_keys.items():
@@ -378,6 +416,17 @@ def lint_plan(plan: dict[str, Any]) -> LintResult:
                 code="DUPLICATE_TRIPLE_ACROSS_CRITERIA",
                 message=f"identical (verification_command, expected_output) used by multiple criteria: {cids}",
             ))
+
+    task_id_set = {task["task_id"] for task in normalized_tasks}
+    for task in normalized_tasks:
+        for dep in task.get("dependencies", []):
+            if dep not in task_id_set:
+                findings.append(LintFinding(
+                    severity=LintSeverity.ERROR,
+                    code="UNKNOWN_DEPENDENCY",
+                    message=f"task {task['task_id']} depends on unknown task '{dep}'",
+                    task_id=task["task_id"],
+                ))
     
     has_errors = any(f.severity == LintSeverity.ERROR for f in findings)
     

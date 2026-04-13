@@ -7,6 +7,8 @@ import sys
 import pytest
 
 from crucible.runtime.cli import build_parser, main
+from crucible.runtime.run_store import RunSummary, create_run_store
+from crucible.runtime.statuses import RunTerminalStatus
 
 
 def _good_plan_json(tmp_path):
@@ -41,6 +43,35 @@ def _good_plan_json(tmp_path):
 def _bad_plan_json(tmp_path):
     plan = {"spec": "x", "project_id": "p1", "build_id": "b1", "tasks": []}
     path = tmp_path / "bad.json"
+    path.write_text(json.dumps(plan))
+    return str(path)
+
+
+def _ambiguous_plan_json(tmp_path):
+    plan = {
+        "spec": "build something todo decide later",
+        "project_id": "p1",
+        "build_id": "b1",
+        "tasks": [
+            {
+                "task_id": "implement-foo",
+                "description": "implement src/foo.py later",
+                "criteria": [{
+                    "criterion_id": "c1",
+                    "criterion_class": "must_pass",
+                    "triple": {
+                        "build_target": "non-path-target",
+                        "verification_command": "echo 'all PASSED here'",
+                        "expected_output": "PASSED",
+                        "failure_signature": "FAILED",
+                    },
+                }],
+                "role": "builder",
+                "intensity_hint": "S",
+            }
+        ],
+    }
+    path = tmp_path / "ambiguous.json"
     path.write_text(json.dumps(plan))
     return str(path)
 
@@ -89,6 +120,70 @@ class TestRun:
         assert parsed["event"] == "run_started"
         assert "run_id" in parsed
 
+    def test_validated_plan_persisted_on_disk(self, tmp_path):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        rc = main(["--runs-dir", runs_dir, "run", plan_path])
+        assert rc == 0
+        run_id = os.listdir(runs_dir)[0]
+        plan_on_disk = json.loads((tmp_path / "runs" / run_id / "plan.json").read_text())
+        assert plan_on_disk["status"] == "validated"
+        task = plan_on_disk["tasks"][0]
+        assert "dependencies" in task
+        assert "acceptance_criteria" in task
+        assert "validation_policy" in task
+        assert "review_policy" in task
+
+    def test_ambiguous_run_does_not_persist_validated_plan(self, tmp_path):
+        plan_path = _ambiguous_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+
+        rc = main(["--runs-dir", runs_dir, "run", plan_path])
+
+        assert rc == 3
+        run_id = os.listdir(runs_dir)[0]
+        run_root = tmp_path / "runs" / run_id
+        assert not (run_root / "plan.json").exists()
+
+        manifest = json.loads((run_root / "run.json").read_text())
+        assert manifest["current_status"] == "escalated"
+        assert manifest["plan_status"] == "missing"
+
+
+def _create_terminal_run(tmp_path, terminal_status: str) -> str:
+    plan = {
+        "spec": "terminal snapshot",
+        "project_id": "p1",
+        "build_id": "b1",
+        "tasks": [{
+            "task_id": "t1",
+            "description": "d",
+            "criteria": [{
+                "criterion_id": "c1",
+                "criterion_class": "must_pass",
+                "triple": {
+                    "build_target": "non-path-target",
+                    "verification_command": "echo OK",
+                    "expected_output": "OK",
+                },
+            }],
+            "role": "builder",
+            "intensity_hint": "S",
+        }],
+    }
+    store, manifest = create_run_store(
+        run_id=None,
+        project_id=plan["project_id"],
+        build_id=plan["build_id"],
+        spec_text=plan["spec"],
+        task_plan=plan,
+        runs_root=str(tmp_path / "runs"),
+        workspace_root=str(tmp_path / "workspace"),
+    )
+    store.write_result(RunSummary(run_id=manifest.run_id, terminal_status=terminal_status))
+    store.update_manifest_status("done", terminal_status)
+    return manifest.run_id
+
 
 class TestStatus:
     def test_unknown_run_id_exits_four(self, tmp_path):
@@ -106,6 +201,31 @@ class TestStatus:
         out = capsys.readouterr().out
         assert run_id in out
 
+    def test_status_json_exposes_plan_state(self, tmp_path, capsys):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        main(["--runs-dir", runs_dir, "run", plan_path])
+        run_id = os.listdir(runs_dir)[0]
+        capsys.readouterr()
+
+        rc = main(["--runs-dir", runs_dir, "status", run_id, "--json"])
+        assert rc == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["plan_present"] is True
+        assert parsed["plan_status"] == "validated"
+        assert parsed["plan"]["run_id"] == run_id
+
+    @pytest.mark.parametrize("terminal_status", [
+        RunTerminalStatus.FAILED.value,
+        RunTerminalStatus.BLOCKED.value,
+        RunTerminalStatus.ESCALATED.value,
+        RunTerminalStatus.CANCELLED.value,
+    ])
+    def test_status_exit_code_handles_canonical_terminal_failures(self, tmp_path, terminal_status):
+        run_id = _create_terminal_run(tmp_path, terminal_status)
+        rc = main(["--runs-dir", str(tmp_path / "runs"), "status", run_id])
+        assert rc == 3
+
 
 class TestWatch:
     def test_unknown_run_exits_four(self, tmp_path):
@@ -122,11 +242,54 @@ class TestWatch:
         rc = main(["--runs-dir", runs_dir, "watch", run_id, "--jsonl", "--from", "0"])
         assert rc == 0
         out = capsys.readouterr().out
-        # At least one JSON line
-        lines = [l for l in out.strip().split("\n") if l]
-        assert len(lines) >= 1
-        first = json.loads(lines[0])
-        assert "event_id" in first
+        lines = [json.loads(l) for l in out.strip().split("\n") if l]
+        assert len(lines) >= 2
+        assert lines[0]["event"] == "plan_state"
+        assert lines[0]["plan_present"] is True
+        assert lines[0]["plan_status"] == "validated"
+        assert any(line.get("type") == "plan_validated" for line in lines[1:])
+
+    @pytest.mark.parametrize("terminal_status", [
+        RunTerminalStatus.FAILED.value,
+        RunTerminalStatus.BLOCKED.value,
+        RunTerminalStatus.ESCALATED.value,
+        RunTerminalStatus.CANCELLED.value,
+    ])
+    def test_watch_exit_code_handles_canonical_terminal_failures(self, tmp_path, terminal_status):
+        run_id = _create_terminal_run(tmp_path, terminal_status)
+        rc = main(["--runs-dir", str(tmp_path / "runs"), "watch", run_id, "--jsonl", "--from", "0"])
+        assert rc == 3
+
+    def test_initial_execution_fails_closed_if_plan_deleted_before_execute(self, tmp_path):
+        from crucible.runtime.local_shell_adapter import LocalShellAdapter
+        from crucible.runtime.preflight import lint_plan
+        from crucible.runtime.run_executor import execute_run
+        from crucible.runtime.run_store import create_run_store
+
+        plan = json.loads(open(_good_plan_json(tmp_path)).read())
+        normalized = lint_plan(plan).normalized_plan or plan
+        store, manifest = create_run_store(
+            run_id=None,
+            project_id=normalized["project_id"],
+            build_id=normalized["build_id"],
+            spec_text=normalized.get("spec", ""),
+            task_plan=normalized,
+            runs_root=str(tmp_path / "runs"),
+            workspace_root=str(tmp_path / "workspace"),
+        )
+        os.unlink(os.path.join(store.run_root, "plan.json"))
+
+        summary = execute_run(
+            store=store,
+            manifest=manifest,
+            plan=normalized,
+            adapter_factory=lambda s: [LocalShellAdapter()],
+            workspace_root=str(tmp_path / "workspace"),
+        )
+
+        assert summary.terminal_status == "run_failed"
+        assert "validated plan required before execution" in summary.blocked_reason
+        assert any(event.type == "plan_gate_failed" for event in store.read_events())
 
 
 class TestResume:
@@ -142,3 +305,14 @@ class TestResume:
         
         rc = main(["--runs-dir", runs_dir, "resume", run_id])
         assert rc == 0
+
+    def test_resume_rejects_missing_durable_plan(self, tmp_path):
+        plan_path = _good_plan_json(tmp_path)
+        runs_dir = str(tmp_path / "runs")
+        main(["--runs-dir", runs_dir, "run", plan_path])
+        run_id = os.listdir(runs_dir)[0]
+        os.unlink(tmp_path / "runs" / run_id / "result.json")
+        os.unlink(tmp_path / "runs" / run_id / "plan.json")
+
+        rc = main(["--runs-dir", runs_dir, "resume", run_id])
+        assert rc == 5

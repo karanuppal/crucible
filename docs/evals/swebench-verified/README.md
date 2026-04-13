@@ -1,107 +1,76 @@
 # SWE-bench Verified with Crucible
 
-This directory contains a **setup-only starter pack** for evaluating Crucible against real SWE-bench Verified tasks.
+This directory contains local benchmark inputs for exercising Crucible against real SWE-bench Verified tasks.
 
-The goal is simple:
-- keep the benchmark metadata local
-- point Crucible at real tasks
-- let Crucible own the solving loop
+## What this folder is
 
-This folder is intentionally **not** a custom benchmark harness with hidden gold patches or hand-written task solutions.
+- local task metadata
+- local copies of benchmark problem statements
+- generated plan inputs for Crucible runs
 
-## What is here
+## What this folder is not
 
-- `evals/swebench-verified/mini-pilot.json`
-  - a 3-task warm-up batch
-- `evals/swebench-verified/starter-batch.json`
-  - a broader 8-task starter set
-- `docs/evals/swebench-verified/problems/*.md`
-  - local copies of the benchmark problem statements + useful metadata
-
-## What is not here
-
+- a hidden benchmark harness
 - gold patches
-- benchmark-specific solving logic
-- hand-authored fixes
-- benchmark cheating shortcuts
+- hand-authored task solutions
+- benchmark-specific cheating logic
 
-## Why this exists
+## Honest current usage
 
-SWE-bench tasks are a good stress test for the core v5.4 promise:
-- can Crucible take a real software problem,
-- validate honestly,
-- fail honestly,
-- choose the next action deterministically,
-- repair and re-test,
-- and drive the task toward a real terminal outcome?
+Use this pack to answer two different questions separately:
 
-This starter pack lets you test that without re-scraping the benchmark every run.
+1. Does Crucible persist truthful runtime artifacts for benchmark-style work?
+2. Can the backend underneath Crucible actually solve the task?
 
-## Included starter tasks
+Those are not the same question.
 
-### Mini-pilot
-1. `astropy__astropy-14309`
-   - tiny warm-up bug
-   - good for first-pass loop validation
-2. `django__django-11133`
-   - small behavioral/type issue
-3. `astropy__astropy-13033`
-   - validation / error-message correctness
+Crucible now persists the runtime-side architecture needed for honest benchmark evaluation:
+- validated `plan.json`
+- task-aware execution packets
+- strategy memory
+- prompt-audit artifacts
+- validator-chain artifacts
+- durable attempts/events/results
 
-### Starter batch
-The 8-task batch broadens coverage across Astropy and Django with small-to-medium difficulty tasks.
+But the backend still matters:
+- `local-shell` is an honest validation baseline, not a code-editing solver
+- OpenClaw/agentic backends are the path for genuine code-editing benchmark attempts
 
-## Recommended usage flow
+So benchmark claims must always name the backend used.
 
-For a single benchmark task:
+## Phase 6 rerun takeaway
 
-1. clone the target repository
-2. checkout the benchmark `base_commit`
-3. feed Crucible the raw `problem_statement`
-4. use `FAIL_TO_PASS` as the main target
-5. keep `PASS_TO_PASS` as regression guardrails
-6. let Crucible own the execution/repair loop
+A representative rerun on `astropy__astropy-14309` now fails for a concrete, inspectable reason:
 
-## Example workflow
+- provisioning no longer reports misleading success
+- the run records a failed Python readiness check
+- `.crucible/environment.json` captures the exact failed command:
+  - `.venv/bin/python -m pytest --version`
+- the failure is therefore attributable to a real environment/tooling gap in that workspace, not to missing runtime artifacts or missing plan/audit machinery
 
-```text
-Select task from mini-pilot.json
-→ checkout target repo at base_commit
-→ create/load Crucible run
-→ execute build / validate / repair / review loop
-→ inspect resulting evidence and terminal status
-```
+See:
+- `docs/evals/swebench-verified/v6.1-batch-report.md` for the earlier baseline
+- `docs/evals/swebench-verified/v7.3.2-rerun-note.md` for the current Phase 6 rerun note
 
-## Important benchmark rule
+## Recommended evaluation flow
 
-Do **not** preload the gold patch or solution into the runtime. The point is to evaluate the harness honestly.
+For a benchmark task:
 
-## Suggested first benchmark
+1. choose a task from `mini-pilot.json` or `starter-batch.json`
+2. check out the target repo at the benchmark `base_commit`
+3. run Crucible with a named backend expectation
+4. inspect the durable artifacts before interpreting the outcome
 
-Start with:
-- `astropy__astropy-14309`
+Interpretation rules:
+- if plan / packet / audit / evidence are missing, that is a runtime architecture problem
+- if those artifacts exist and the backend cannot edit code, that is a backend capability limitation
+- if those artifacts exist and a real editing backend still fails, then the failure may be task difficulty, model quality, or repo-specific complexity
 
-Why:
-- it is small enough to validate the loop quickly
-- failures are easier to inspect
-- it is a good first sanity check for build → fail → repair → retest behavior
+## Current reading order
 
-## Relationship to OpenClaw
-
-If you are using Crucible from OpenClaw, the usual flow is:
-- OpenClaw handles the user/task surface
-- Crucible handles runtime execution semantics
-- this SWE-bench pack provides the benchmark task data
-
-So this folder is **input data + local documentation**, not the runtime itself.
-
-## If you are new to this repo
-
-Read in this order:
-1. `README.md`
-2. `docs/crucible-spec-v5.4.md`
-3. `docs/execution-plan-v5.4.md`
-4. this file
-5. `tests/runtime/test_closed_loop_runtime_e2e.py`
-
-That should give you enough context to understand how benchmark evaluation is supposed to work.
+1. `docs/crucible-spec-v7.3.2.md`
+2. `docs/architecture.md`
+3. this file
+4. `docs/evals/swebench-verified/v7.3.2-rerun-note.md`
+5. `tests/environment/test_existing_repo.py`
+6. `tests/runtime/test_execution_packet_phase2.py`

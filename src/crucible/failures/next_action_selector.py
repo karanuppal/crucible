@@ -73,10 +73,16 @@ class NextActionSelector:
                 budget_key = "integration_attempt_budget"
                 rule_fired = "retryable:integration_hint->integrate"
             elif "environment_hint" in evidence.hints:
-                base_action = NextAction.REPAIR
-                attempt_type = AttemptType.REPAIR
-                budget_key = "repair_attempt_budget"
-                rule_fired = "retryable:environment_hint->repair"
+                if "tooling_hint" in evidence.hints:
+                    base_action = NextAction.BLOCKED
+                    attempt_type = None
+                    budget_key = None
+                    rule_fired = "retryable:environment_hint+tooling_hint->block"
+                else:
+                    base_action = NextAction.REPAIR
+                    attempt_type = AttemptType.REPAIR
+                    budget_key = "repair_attempt_budget"
+                    rule_fired = "retryable:environment_hint->repair"
             elif sum(1 for item in attempt_history if item.get("signature") == evidence.signature) >= 2 or evidence.repeated_failure:
                 base_action = NextAction.DEBUG
                 attempt_type = AttemptType.DEBUG

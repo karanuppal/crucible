@@ -1,0 +1,24 @@
+{
+  "spec": "Resolve django__django-11333",
+  "project_id": "swebench-verified-django",
+  "build_id": "django__django-11333",
+  "tasks": [
+    {
+      "task_id": "django__django-11333-task",
+      "description": "Resolve django__django-11333",
+      "criteria": [
+        {
+          "criterion_id": "c1",
+          "criterion_class": "must_pass",
+          "triple": {
+            "build_target": "django/urls/resolvers.py",
+            "verification_command": "python -m pytest tests/urlpatterns/test_resolvers.py -q -k test_resolver_cache_default__root_urlconf",
+            "expected_output": "1 passed"
+          }
+        }
+      ],
+      "role": "debugger",
+      "intensity_hint": "M"
+    }
+  ]
+}

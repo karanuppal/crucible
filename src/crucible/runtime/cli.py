@@ -24,9 +24,20 @@ import os
 import sys
 from typing import Any
 
+from crucible.planning import (
+    PlanningError,
+    build_plan_artifact,
+    detect_ambiguity,
+    ensure_validated_plan,
+)
 from crucible.runtime.preflight import lint_plan, LintResult
 from crucible.runtime.run_store import (
     RunStore, RunSummary, create_run_store, load_run_store, default_runs_root,
+)
+from crucible.runtime.statuses import (
+    NONSUCCESS_RUN_STATUSES,
+    RunTerminalStatus,
+    legacy_run_status,
 )
 from crucible.runtime.run_executor import execute_run
 
@@ -124,23 +135,67 @@ def cmd_run(args: argparse.Namespace) -> int:
     
     # Create run store
     runs_root = args.runs_dir or default_runs_root()
+    embedding_surface = args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", "")
+    embedding_session_ref = os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", "")
     store, manifest = create_run_store(
         run_id=None,
         project_id=normalized["project_id"],
         build_id=normalized["build_id"],
         spec_text=normalized.get("spec", ""),
         task_plan=normalized,
-        embedding_surface=args.embedding or os.environ.get("CRUCIBLE_EMBEDDING_SURFACE", ""),
-        embedding_session_ref=os.environ.get("CRUCIBLE_EMBEDDING_SESSION_REF", ""),
+        embedding_surface=embedding_surface,
+        embedding_session_ref=embedding_session_ref,
         runs_root=runs_root,
         workspace_root=workspace_root,
+        persist_validated_plan=False,
     )
+
+    ambiguity = detect_ambiguity(normalized)
+    if ambiguity.should_escalate:
+        store.append_event("run_escalated", payload={"ambiguity": ambiguity.to_dict()})
+        manifest.current_phase = "planning"
+        manifest.current_status = "escalated"
+        store.write_manifest(manifest)
+        if args.jsonl:
+            _emit_jsonl({"event": "ambiguity_detected", "run_id": manifest.run_id, "ambiguity": ambiguity.to_dict()})
+        else:
+            print("ambiguity_detected: true")
+            print(f"ambiguity_reasons: {ambiguity.reasons}")
+        return 3
+
+    try:
+        durable_plan = build_plan_artifact(
+            run_id=manifest.run_id,
+            submitted_plan=normalized,
+            embedding_surface=embedding_surface,
+            embedding_session_ref=embedding_session_ref,
+        )
+    except PlanningError as e:
+        store.append_event("plan_invalid", payload={"error": str(e)})
+        manifest.current_phase = "planning"
+        manifest.current_status = "failed"
+        store.write_manifest(manifest)
+        if args.jsonl:
+            _emit_jsonl({"event": "plan_invalid", "run_id": manifest.run_id, "error": str(e)})
+        else:
+            sys.stderr.write(f"plan invalid: {e}\n")
+        return 2
+
+    store.write_plan(durable_plan)
+    store.append_event("plan_validated", payload={"plan_ref": store.plan_path, "plan_status": durable_plan["status"]})
+    manifest = store.read_manifest() or manifest
     
     if args.jsonl:
         _emit_jsonl({
             "event": "run_started",
             "run_id": manifest.run_id,
             "run_root": manifest.run_root,
+        })
+        _emit_jsonl({
+            "event": "plan_validated",
+            "run_id": manifest.run_id,
+            "plan_status": durable_plan["status"],
+            "plan_path": store.plan_path,
         })
     else:
         print(f"run_id: {manifest.run_id}")
@@ -188,10 +243,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 5
     
     try:
+        ensure_validated_plan(store.read_plan())
         summary = execute_run(
             store=store,
             manifest=manifest,
-            plan=normalized,
+            plan=ensure_validated_plan(store.read_plan()),
             adapter_factory=_default_factory,
             workspace_root=workspace_root,
         )
@@ -205,7 +261,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"completed: {summary.completed_tasks}")
         print(f"failed: {summary.failed_tasks}")
     
-    if summary.terminal_status == "complete":
+    if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value:
         return 0
     return 3
 
@@ -221,10 +277,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     result = store.read_result()
     events = store.read_events()
     attempts = store.list_attempts()
+    durable_plan = store.read_plan()
     
     snapshot = {
         "manifest": manifest.to_dict() if manifest else None,
         "result": result,
+        "plan": durable_plan,
+        "plan_present": durable_plan is not None,
+        "plan_status": (durable_plan or {}).get("status") or (manifest.plan_status if manifest else "missing"),
+        "plan_path": store.plan_path,
         "event_count": len(events),
         "last_events": [e.to_dict() for e in events[-5:]],
         "attempts": [a.to_dict() for a in attempts],
@@ -240,6 +301,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"status: {manifest.current_status}")
             print(f"events: {len(events)}")
             print(f"attempts: {len(attempts)}")
+            print(f"plan_present: {durable_plan is not None}")
+            print(f"plan_status: {(durable_plan or {}).get('status') or manifest.plan_status}")
+            print(f"plan_path: {store.plan_path}")
             if result:
                 print(f"terminal_status: {result.get('terminal_status')}")
                 print(f"completed: {result.get('completed_tasks')}")
@@ -249,9 +313,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     
     if result:
         ts = result.get("terminal_status")
-        if ts == "complete":
+        if ts == RunTerminalStatus.SUCCEEDED.value:
             return 0
-        if ts in {"blocked", "failed", "partial", "cancelled"}:
+        if ts in NONSUCCESS_RUN_STATUSES or ts == "partial":
             return 3
     return 0
 
@@ -263,6 +327,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if store is None:
         sys.stderr.write(f"unknown run_id: {args.run_id}\n")
         return 4
+
+    manifest = store.read_manifest()
+    durable_plan = store.read_plan()
+    plan_snapshot = {
+        "event": "plan_state",
+        "run_id": args.run_id,
+        "plan_present": durable_plan is not None,
+        "plan_status": (durable_plan or {}).get("status") or (manifest.plan_status if manifest else "missing"),
+        "plan_path": store.plan_path,
+        "plan": durable_plan,
+    }
     
     def _emit_events(events):
         if args.jsonl:
@@ -273,6 +348,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 loc = f"[{e.task_id}]" if e.task_id else ""
                 print(f"{e.timestamp:.0f} {e.type:30s} {loc} {json.dumps(e.payload)}")
     
+    if args.jsonl:
+        _emit_jsonl(plan_snapshot)
+    else:
+        print(f"plan_present: {plan_snapshot['plan_present']}")
+        print(f"plan_status: {plan_snapshot['plan_status']}")
+        print(f"plan_path: {plan_snapshot['plan_path']}")
+
     seen_event_ids: set[str] = set()
     initial = store.read_events(from_event_id=args.from_event)
     for e in initial:
@@ -296,9 +378,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if store.is_terminal():
         result = store.read_result()
         ts = result.get("terminal_status") if result else None
-        if ts == "complete":
+        if ts == RunTerminalStatus.SUCCEEDED.value:
             return 0
-        if ts in {"blocked", "failed", "partial", "cancelled"}:
+        if ts in NONSUCCESS_RUN_STATUSES or ts == "partial":
             return 3
     return 0
 
@@ -327,7 +409,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             _emit_jsonl({"event": "already_terminal", "result": result})
         else:
             print(f"already terminal: {result.get('terminal_status') if result else 'unknown'}")
-        return 0 if result and result.get("terminal_status") == "complete" else 3
+        return 0 if result and result.get("terminal_status") == RunTerminalStatus.SUCCEEDED.value else 3
     
     # Reconcile in-flight attempts and re-execute the plan from the
     # persisted snapshot. The executor is idempotent enough for our
@@ -336,10 +418,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     flagged = store.reconcile_in_flight_attempts()
     store.append_event("run_resumed", payload={"reconciled_attempts": [a.attempt_id for a in flagged]})
     
-    plan = store.read_tasks_snapshot()
     manifest = store.read_manifest()
-    if plan is None or manifest is None:
+    if store.read_tasks_snapshot() is None or manifest is None:
         sys.stderr.write(f"run {args.run_id} is missing plan or manifest\n")
+        store.release_lock()
+        return 5
+    try:
+        durable_plan = ensure_validated_plan(store.read_plan())
+    except PlanningError as e:
+        sys.stderr.write(f"run {args.run_id} has invalid or missing durable plan.json: {e}\n")
         store.release_lock()
         return 5
     
@@ -396,7 +483,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         summary = execute_run(
             store=store,
             manifest=manifest,
-            plan=plan,
+            plan=durable_plan,
             adapter_factory=_factory,
             workspace_root=workspace_root,
         )
@@ -408,14 +495,18 @@ def cmd_resume(args: argparse.Namespace) -> int:
             "event": "resumed",
             "run_id": args.run_id,
             "reconciled": [a.attempt_id for a in flagged],
+            "plan_status": durable_plan.get("status", "missing"),
+            "plan_path": store.plan_path,
             "summary": summary.to_dict(),
         })
     else:
         print(f"resumed run {args.run_id}")
         print(f"reconciled {len(flagged)} in-flight attempts")
+        print(f"plan_status: {durable_plan.get('status', 'missing')}")
+        print(f"plan_path: {store.plan_path}")
         print(f"terminal_status: {summary.terminal_status}")
     
-    return 0 if summary.terminal_status == "complete" else 3
+    return 0 if summary.terminal_status == RunTerminalStatus.SUCCEEDED.value else 3
 
 
 # ─────────────────────────────────────────────────────────────────

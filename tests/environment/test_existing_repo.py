@@ -85,7 +85,13 @@ set -eu
 echo "$*" >> "{log_path}"
 if [ "$1" = "venv" ]; then
   mkdir -p .venv/bin
-  printf '#!/bin/sh\nexit 0\n' > .venv/bin/python
+  cat > .venv/bin/python <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ] && [ "$3" = "--version" ]; then
+  exit 0
+fi
+exit 0
+EOF
   chmod +x .venv/bin/python
   touch .venv/pyvenv.cfg
   exit 0
@@ -104,6 +110,8 @@ exit 99
 name = "demo"
 version = "0.1.0"
 dependencies = []
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 """.strip()
     )
 
@@ -111,10 +119,12 @@ dependencies = []
 
     assert result.status == "provisioned"
     assert result.commands_run == [["uv", "venv"], ["uv", "sync"]]
+    assert result.readiness_checks == [[str(tmp_path / ".venv" / "bin" / "python"), "-m", "pytest", "--version"]]
     assert (tmp_path / ".venv" / "installed.ok").is_file()
     payload = json.loads((tmp_path / ".crucible" / "environment.json").read_text())
     assert payload["strategy"]["toolchain"] == "uv"
     assert payload["commands_run"] == [["uv", "venv"], ["uv", "sync"]]
+    assert payload["readiness_checks"] == [[str(tmp_path / ".venv" / "bin" / "python"), "-m", "pytest", "--version"]]
     assert log_path.read_text().splitlines() == ["venv", "sync"]
 
 
@@ -185,6 +195,107 @@ version = "0.1.0"
     from crucible.environment.existing_repo import _environment_already_usable
 
     assert _environment_already_usable(tmp_path, detected, strategy) is False
+
+
+def test_python_ready_check_rejects_installed_sentinel_without_runnable_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "demo"
+version = "0.1.0"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+""".strip()
+    )
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text("home = /tmp/python\n")
+    (venv_bin / "python").write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"pytest\" ] && [ \"$3\" = \"--version\" ]; then\n"
+        "  echo 'No module named pytest' 1>&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    (venv_bin / "python").chmod(0o755)
+    metadata_dir = tmp_path / ".crucible"
+    metadata_dir.mkdir()
+    (metadata_dir / "environment.json").write_text(json.dumps({
+        "status": "provisioned",
+        "strategy": {"toolchain": "uv"},
+        "commands_run": [["uv", "sync"]],
+    }))
+
+    detected = detect_existing_repo_environment(str(tmp_path))
+    strategy = choose_environment_strategy(detected)
+
+    from crucible.environment.existing_repo import ExistingRepoProvisionResult, _environment_already_usable
+
+    result = ExistingRepoProvisionResult(
+        detected=detected,
+        strategy=strategy,
+        status="ready",
+        metadata_path=str(metadata_dir / "environment.json"),
+    )
+
+    assert _environment_already_usable(tmp_path, detected, strategy, result=result) is False
+    assert result.readiness_checks == [[str(venv_bin / "python"), "-m", "pytest", "--version"]]
+    assert result.readiness_failures == ["No module named pytest"]
+    assert "missing runnable pytest" in result.failure_reason
+
+
+@pytest.mark.integration
+def test_provisioning_rejects_python_env_without_runnable_pytest(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_executable(
+        bin_dir / "uv",
+        '''#!/bin/sh
+set -eu
+if [ "$1" = "venv" ]; then
+  mkdir -p .venv/bin
+  cat > .venv/bin/python <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ] && [ "$3" = "--version" ]; then
+  echo 'No module named pytest' 1>&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x .venv/bin/python
+  touch .venv/pyvenv.cfg
+  exit 0
+fi
+if [ "$1" = "sync" ]; then
+  touch .venv/installed.ok
+  exit 0
+fi
+exit 99
+''',
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "demo"
+version = "0.1.0"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+""".strip()
+    )
+
+    with pytest.raises(ExistingRepoProvisionError, match="missing runnable pytest") as excinfo:
+        ensure_existing_repo_environment(str(tmp_path))
+
+    result = excinfo.value.result
+    assert result.failure_class == "environment_block"
+    assert result.readiness_checks == [[str(tmp_path / ".venv" / "bin" / "python"), "-m", "pytest", "--version"]]
+    assert result.readiness_failures == ["No module named pytest"]
+    payload = json.loads((tmp_path / ".crucible" / "environment.json").read_text())
+    assert payload["status"] == "failed"
+    assert payload["failure_class"] == "environment_block"
+    assert payload["readiness_failures"] == ["No module named pytest"]
 
 
 def test_node_ready_check_rejects_empty_node_modules(tmp_path):

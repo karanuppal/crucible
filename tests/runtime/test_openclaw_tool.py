@@ -5,8 +5,10 @@ import os
 import time
 import pytest
 
+from crucible.planning import PlanningError
 from crucible.runtime.preflight import lint_plan
 from crucible.runtime.run_store import create_run_store
+from crucible.runtime.statuses import RunTerminalStatus
 
 from crucible.runtime.openclaw_tool import execute, TOOL_SCHEMA
 
@@ -38,6 +40,12 @@ def _good_plan():
 
 def _bad_plan():
     return {"spec": "x", "project_id": "p", "build_id": "b", "tasks": []}
+
+
+def _ambiguous_plan():
+    plan = _good_plan()
+    plan["spec"] = "openclaw wrapper todo decide later"
+    return plan
 
 
 class TestSchemaContract:
@@ -100,8 +108,10 @@ class TestRunMode:
             "plan": _good_plan(),
             "runs_dir": str(tmp_path / "runs"),
         })
-        assert out["terminal_status"] == "complete"
-        assert "t1" in out["completed_tasks"]
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
+        assert out["plan_status"] == "validated"
+        assert out["plan"]["tasks"][0]["review_policy"]["tier"] == "none"
+        assert out["completed_tasks"] == ["t1"]
     
     def test_run_failing_returns_terminal_failed(self, tmp_path):
         plan = _good_plan()
@@ -112,7 +122,7 @@ class TestRunMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["status"] == "terminal"
-        assert out["terminal_status"] == "failed"
+        assert out["terminal_status"] == RunTerminalStatus.FAILED.value
     
     def test_run_lint_failed_propagates(self, tmp_path):
         out = execute({
@@ -121,6 +131,24 @@ class TestRunMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["status"] == "lint_failed"
+
+    def test_ambiguous_run_does_not_leave_validated_plan(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        out = execute({
+            "mode": "run",
+            "plan": _ambiguous_plan(),
+            "runs_dir": runs_dir,
+        })
+
+        assert out["status"] == "terminal"
+        assert out["exit_code"] == 3
+        run_id = os.listdir(runs_dir)[0]
+        run_root = os.path.join(runs_dir, run_id)
+        assert not os.path.exists(os.path.join(run_root, "plan.json"))
+
+        manifest = json.loads(open(os.path.join(run_root, "run.json")).read())
+        assert manifest["current_status"] == "escalated"
+        assert manifest["plan_status"] == "missing"
     
     def test_embedding_session_ref_threaded_into_manifest(self, tmp_path):
         out = execute({
@@ -149,7 +177,9 @@ class TestStatusMode:
         assert out["run_id"] == run_id
         assert out["phase"] == "done"
         assert out["is_terminal"] is True
-        assert out["terminal_status"] == "complete"
+        assert out["plan_present"] is True
+        assert out["plan_status"] == "validated"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
     
     def test_status_unknown_returns_error(self, tmp_path):
         out = execute({
@@ -174,9 +204,12 @@ class TestWatchMode:
         out = execute({"mode": "watch", "run_id": run_id, "runs_dir": runs_dir})
         assert isinstance(out["events"], list)
         assert len(out["events"]) > 0
-        # Each event has event_id and type
-        assert "event_id" in out["events"][0]
-        assert "type" in out["events"][0]
+        assert out["plan_present"] is True
+        assert out["plan_status"] == "validated"
+        assert out["plan"]["run_id"] == run_id
+        assert out["events"][0]["event"] == "plan_state"
+        assert any("event_id" in event and "type" in event for event in out["events"][1:])
+        assert any(event.get("type") == "plan_validated" for event in out["events"][1:])
     
     def test_watch_unknown_returns_error(self, tmp_path):
         out = execute({
@@ -195,7 +228,8 @@ class TestResumeMode:
         
         out = execute({"mode": "resume", "run_id": run_id, "runs_dir": runs_dir})
         assert out["status"] == "ok"
-        assert out["terminal_status"] == "complete"
+        assert out["plan_status"] == "validated"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
     
     def test_run_can_use_openclaw_bridge_backend(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -223,7 +257,7 @@ class TestResumeMode:
         })
 
         assert out["status"] == "ok", f"got {out}"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
 
@@ -269,9 +303,39 @@ class TestResumeMode:
 
         assert os.path.isfile(result_path), "detached bridge-backed run never completed"
         result = json.loads(open(result_path).read())
-        assert result["terminal_status"] == "complete"
+        assert result["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
+
+    def test_detach_persists_canonical_run_failed_on_background_exception(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+
+        def fake_spawn(prompt, spec_id, cwd, timeout_seconds, metadata):
+            return f"oc-session-{spec_id}"
+
+        def fake_wait(session_id, timeout):
+            raise RuntimeError("detached wait blew up")
+
+        out = execute({
+            "mode": "run",
+            "plan": _good_plan(),
+            "runs_dir": runs_dir,
+            "detach": True,
+            "openclaw_spawn_callable": fake_spawn,
+            "openclaw_wait_callable": fake_wait,
+        })
+
+        result_path = os.path.join(out["run_root"], "result.json")
+        for _ in range(50):
+            if os.path.isfile(result_path):
+                break
+            time.sleep(0.02)
+
+        assert os.path.isfile(result_path), "detached bridge-backed failure never persisted"
+        result = json.loads(open(result_path).read())
+        manifest = json.loads(open(os.path.join(out["run_root"], "run.json")).read())
+        assert result["terminal_status"] == RunTerminalStatus.FAILED.value
+        assert manifest["current_status"] == RunTerminalStatus.FAILED.value
 
     def test_resume_can_use_openclaw_bridge_backend(self, tmp_path):
         runs_dir = str(tmp_path / "runs")
@@ -306,7 +370,7 @@ class TestResumeMode:
         })
 
         assert out["status"] == "ok", f"got {out}"
-        assert out["terminal_status"] == "complete"
+        assert out["terminal_status"] == RunTerminalStatus.SUCCEEDED.value
         assert spawn_calls == ["t1.c1"]
         assert wait_calls == ["oc-session-t1.c1"]
         assert out["run_root"] == manifest.run_root
@@ -340,3 +404,30 @@ class TestResumeMode:
             "runs_dir": str(tmp_path / "runs"),
         })
         assert out["exit_code"] == 4
+
+    def test_resume_rejects_missing_durable_plan(self, tmp_path):
+        runs_dir = str(tmp_path / "runs")
+        run_out = execute({"mode": "run", "plan": _good_plan(), "runs_dir": runs_dir})
+        run_root = run_out["run_root"]
+        os.unlink(os.path.join(run_root, "result.json"))
+        os.unlink(os.path.join(run_root, "plan.json"))
+
+        out = execute({"mode": "resume", "run_id": run_out["run_id"], "runs_dir": runs_dir})
+        assert out["status"] == "error"
+        assert out["exit_code"] == 5
+        assert "durable plan.json" in out["message"]
+
+    def test_run_store_does_not_silently_swallow_plan_creation_failures(self, tmp_path, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("synthetic planning failure")
+
+        monkeypatch.setattr("crucible.planning.build_plan_artifact", boom)
+        with pytest.raises(RuntimeError, match="synthetic planning failure"):
+            create_run_store(
+                run_id=None,
+                project_id="p1",
+                build_id="b1",
+                spec_text="spec",
+                task_plan=_good_plan(),
+                runs_root=str(tmp_path / "runs"),
+            )

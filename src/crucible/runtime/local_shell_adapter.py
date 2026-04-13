@@ -1,13 +1,14 @@
-"""Phase 8: LocalShellAdapter — runs the spec's verification command in a real shell.
+"""Phase 8: LocalShellAdapter — runs real shell commands honestly.
 
 This is the default backend for the standalone CLI. Unlike InMemoryAdapter,
 it does NOT rubber-stamp results — it actually executes the command and
 returns COMPLETE only if the command exits 0 and stdout matches expectations.
 
-The adapter expects the AdapterRunSpec.prompt to encode the verification
-command (the run_executor wires this up from the Criterion triple). For
-multi-criterion tasks, the executor invokes the adapter once per criterion
-and aggregates.
+In the Phase 2 task-aware path, the executor passes the real shell command in
+`AdapterRunSpec.metadata["command"]` and uses `prompt` for human/task context.
+Older callers may still put the command directly in `prompt`, and this adapter
+falls back to that for compatibility. For multi-criterion tasks, the executor
+invokes the adapter once per criterion and aggregates.
 
 This adapter is intentionally simple: subprocess.run with timeout, no
 sandboxing. Production embedders should use real backends (Codex, Claude
@@ -96,9 +97,13 @@ class LocalShellAdapter(BackendAdapter):
         handle_id = f"{self._backend_id}-{uuid.uuid4().hex[:10]}"
         started = time.time()
         
-        # The prompt carries the verification command (run_executor encodes it).
-        # Optional metadata for expected output: spec.metadata.get("expected_output")
+        # Phase 2: default execution is task-aware. Real execution commands live
+        # in structured metadata; prompt remains available for agentic backends.
+        # Fall back to spec.prompt for older callers/tests.
         cmd = spec.prompt
+        if hasattr(spec, "metadata") and isinstance(getattr(spec, "metadata", None), dict):
+            cmd = spec.metadata.get("command", cmd)
+        executed_command = cmd
         expected = ""
         if hasattr(spec, "metadata") and isinstance(getattr(spec, "metadata", None), dict):
             expected = spec.metadata.get("expected_output", "") or ""
@@ -153,6 +158,9 @@ class LocalShellAdapter(BackendAdapter):
         else:
             status = AdapterStatus.COMPLETE
         
+        if isinstance(getattr(spec, "metadata", None), dict):
+            spec.metadata.setdefault("executed_command", executed_command)
+
         self._runs[handle_id] = _LocalRun(
             handle_id=handle_id,
             spec=spec,
@@ -188,8 +196,9 @@ class LocalShellAdapter(BackendAdapter):
             )
         
         # Build a summary that surfaces the truth
+        executed_command = (run.spec.metadata or {}).get("executed_command", run.spec.prompt) if isinstance(run.spec.metadata, dict) else run.spec.prompt
         summary_lines = [
-            f"command: {run.spec.prompt}",
+            f"command: {executed_command}",
             f"exit_code: {run.exit_code}",
             f"status: {run.status.value}",
         ]

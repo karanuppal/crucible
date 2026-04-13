@@ -12,8 +12,32 @@ from crucible.runtime.openclaw_bridge import (
 
 def _store(tmp_path):
     store, _ = create_run_store(
-        run_id=None, project_id="bridge-test", build_id="b1",
-        spec_text="x", task_plan={"spec": "x", "project_id": "bridge-test", "build_id": "b1", "tasks": []},
+        run_id=None,
+        project_id="bridge-test",
+        build_id="b1",
+        spec_text="x",
+        task_plan={
+            "spec": "x",
+            "project_id": "bridge-test",
+            "build_id": "b1",
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "description": "bridge boundary smoke test",
+                    "criteria": [{
+                        "criterion_id": "c1",
+                        "criterion_class": "must_pass",
+                        "triple": {
+                            "build_target": "non-path-target",
+                            "verification_command": "echo OK",
+                            "expected_output": "OK",
+                        },
+                    }],
+                    "role": "builder",
+                    "intensity_hint": "S",
+                }
+            ],
+        },
         runs_root=str(tmp_path / "runs"),
     )
     return store

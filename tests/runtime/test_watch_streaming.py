@@ -55,7 +55,9 @@ class TestWatchFollowStreams:
             capture_output=True, text=True, timeout=10,
         )
         # Run hasn't been executed at all → only run_started event
-        events = [json.loads(l) for l in r.stdout.strip().split("\n") if l]
+        records = [json.loads(l) for l in r.stdout.strip().split("\n") if l]
+        assert records[0]["event"] == "plan_state"
+        events = records[1:]
         types = [e["type"] for e in events]
         assert "run_started" in types
         assert "run_terminal" not in types  # not run yet
@@ -104,6 +106,8 @@ class TestWatchFollowStreams:
         assert watch_elapsed >= 0.5, f"watch returned too fast: {watch_elapsed}s"
         
         # And it must have collected the terminal event
-        events = [json.loads(l) for l in watch_proc.stdout.strip().split("\n") if l]
+        records = [json.loads(l) for l in watch_proc.stdout.strip().split("\n") if l]
+        assert records[0]["event"] == "plan_state"
+        events = records[1:]
         types = [e["type"] for e in events]
         assert "run_terminal" in types, f"no run_terminal in events: {types}"

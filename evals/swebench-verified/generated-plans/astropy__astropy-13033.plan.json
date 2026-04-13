@@ -1,0 +1,24 @@
+{
+  "spec": "Resolve astropy__astropy-13033",
+  "project_id": "swebench-verified-astropy",
+  "build_id": "astropy__astropy-13033",
+  "tasks": [
+    {
+      "task_id": "astropy__astropy-13033-task",
+      "description": "Resolve astropy__astropy-13033",
+      "criteria": [
+        {
+          "criterion_id": "c1",
+          "criterion_class": "must_pass",
+          "triple": {
+            "build_target": "astropy/timeseries/sampled.py",
+            "verification_command": "python -m pytest astropy/timeseries/tests/test_sampled.py::test_required_columns -q",
+            "expected_output": "1 passed"
+          }
+        }
+      ],
+      "role": "debugger",
+      "intensity_hint": "M"
+    }
+  ]
+}

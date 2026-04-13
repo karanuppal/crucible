@@ -75,8 +75,8 @@ class TestFullFlow:
         assert (run_dirs[0] / "events.jsonl").exists()
         assert (run_dirs[0] / "tasks.json").exists()
         assert (run_dirs[0] / "result.json").exists()
-        # Foreground run with default in-memory adapter should complete
-        assert "terminal_status: complete" in r.stdout
+        # Foreground run with default in-memory adapter should report canonical run status
+        assert "terminal_status: run_succeeded" in r.stdout
 
     def test_status_returns_run_info(self, tmp_path):
         path = tmp_path / "plan.json"
@@ -97,9 +97,14 @@ class TestFullFlow:
         r = _run_cli(["--runs-dir", str(runs_dir), "watch", run_id, "--jsonl", "--from", "0"])
         assert r.returncode == 0
         lines = [l for l in r.stdout.strip().split("\n") if l]
-        assert len(lines) >= 1
-        first = json.loads(lines[0])
-        assert "event_id" in first
+        assert len(lines) >= 2
+
+        plan_state = json.loads(lines[0])
+        assert plan_state["event"] == "plan_state"
+        assert plan_state["plan_present"] is True
+
+        first_event = json.loads(lines[1])
+        assert "event_id" in first_event
 
     def test_resume_nonterminal_run(self, tmp_path):
         path = tmp_path / "plan.json"

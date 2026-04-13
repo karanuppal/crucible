@@ -22,16 +22,17 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from enum import Enum
 from typing import Any
+
+from crucible.runtime.statuses import legacy_run_status
 
 
 # ─────────────────────────────────────────────────────────────────
 # Schema (matches v5.3 §26.2)
 # ─────────────────────────────────────────────────────────────────
 
-RunStatusLiteral = str  # "running" | "blocked" | "complete" | "failed" | "partial"
-TerminalStatusLiteral = str  # "complete" | "failed" | "blocked" | "partial" | "cancelled"
+RunStatusLiteral = str
+TerminalStatusLiteral = str
 
 
 @dataclass
@@ -50,6 +51,8 @@ class RunManifest:
     embedding_session_ref: str = ""
     ledger_ref: str = ""
     workspace_root: str = ""
+    plan_ref: str = ""
+    plan_status: str = "missing"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -186,6 +189,7 @@ class RunSummary:
         d = {
             "run_id": self.run_id,
             "terminal_status": self.terminal_status,
+            "legacy_terminal_status": legacy_run_status(self.terminal_status),
             "completed_tasks": list(self.completed_tasks),
             "failed_tasks": list(self.failed_tasks),
             "partial_tasks": list(self.partial_tasks),
@@ -325,6 +329,10 @@ class RunStore:
     @property
     def tasks_path(self) -> str:
         return os.path.join(self._run_root, "tasks.json")
+
+    @property
+    def plan_path(self) -> str:
+        return os.path.join(self._run_root, "plan.json")
     
     @property
     def events_path(self) -> str:
@@ -396,6 +404,22 @@ class RunStore:
         with open(self.tasks_path) as f:
             return json.load(f)
     
+    # ─── Durable plan artifact ───
+
+    def write_plan(self, plan: dict[str, Any]) -> None:
+        _atomic_write_json(self.plan_path, plan)
+        manifest = self.read_manifest()
+        if manifest is not None:
+            manifest.plan_ref = self.plan_path
+            manifest.plan_status = str(plan.get("status") or "missing")
+            self.write_manifest(manifest)
+
+    def read_plan(self) -> dict[str, Any] | None:
+        if not os.path.isfile(self.plan_path):
+            return None
+        with open(self.plan_path) as f:
+            return json.load(f)
+
     # ─── Events ───
     
     def append_event(
@@ -588,6 +612,7 @@ def create_run_store(
     runs_root: str | None = None,
     ledger_ref: str = "",
     workspace_root: str = "",
+    persist_validated_plan: bool = True,
 ) -> tuple[RunStore, RunManifest]:
     """Create a fresh run directory and return (store, manifest)."""
     if run_id is None:
@@ -614,9 +639,27 @@ def create_run_store(
         embedding_session_ref=embedding_session_ref,
         ledger_ref=ledger_ref,
         workspace_root=_canonicalize_workspace(workspace_root),
+        plan_ref=os.path.join(run_root, "plan.json"),
+        plan_status="missing",
     )
     store.write_manifest(manifest)
     store.write_tasks_snapshot(task_plan)
+    if task_plan and persist_validated_plan:
+        from crucible.planning import PlanningError, build_plan_artifact
+
+        try:
+            durable_plan = build_plan_artifact(
+                run_id=run_id,
+                submitted_plan=task_plan,
+                embedding_surface=embedding_surface,
+                embedding_session_ref=embedding_session_ref,
+            )
+        except PlanningError as e:
+            manifest.plan_status = "invalid"
+            store.write_manifest(manifest)
+            store.append_event("plan_invalid", payload={"error": str(e)})
+            raise
+        store.write_plan(durable_plan)
     store.append_event("run_started", payload={"run_id": run_id, "project_id": project_id})
     return store, manifest
 
